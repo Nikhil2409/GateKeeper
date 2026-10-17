@@ -1,0 +1,5 @@
+# Local secrets for start.ps1
+.env
+
+# IDE
+.idea/
