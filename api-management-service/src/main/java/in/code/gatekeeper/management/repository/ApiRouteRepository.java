@@ -1,0 +1,24 @@
+package in.code.gatekeeper.management.repository;
+
+import in.code.gatekeeper.management.entity.ApiRoute;
+import org.springframework.data.jpa.repository.EntityGraph;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+/**
+ * Tenant queries always filter by organizationId, so one tenant can never load another tenant's route.
+ */
+public interface ApiRouteRepository extends JpaRepository<ApiRoute, Long> {
+
+    @EntityGraph(attributePaths = {"allowedMethods", "headerRules"})
+    List<ApiRoute> findAllByOrganizationIdOrderByRouteId(Long organizationId);
+
+    @EntityGraph(attributePaths = {"allowedMethods", "headerRules"})
+    Optional<ApiRoute> findByOrganizationIdAndRouteId(Long organizationId, String routeId);
+
+    boolean existsByOrganizationIdAndRouteId(Long organizationId, String routeId);
+
+    boolean existsByOrganizationIdAndPathPattern(Long organizationId, String pathPattern);
+}
