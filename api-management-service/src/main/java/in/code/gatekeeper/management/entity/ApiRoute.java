@@ -70,6 +70,12 @@ public class ApiRoute extends AuditableEntity {
     @Column(name = "http_method", nullable = false, length = 10)
     private Set<HttpMethodType> allowedMethods = new HashSet<>();
 
+    // Request headers the gateway forwards (stored lowercase); every other incoming header is dropped
+    @ElementCollection(fetch = FetchType.LAZY)
+    @CollectionTable(name = "route_allowed_headers", joinColumns = @JoinColumn(name = "route_pk"))
+    @Column(name = "header_name", nullable = false, length = 200)
+    private Set<String> allowedHeaders = new HashSet<>();
+
     @OneToMany(mappedBy = "route", cascade = CascadeType.ALL, orphanRemoval = true)
     private Set<RouteHeaderRule> headerRules = new LinkedHashSet<>();
 
@@ -84,5 +90,10 @@ public class ApiRoute extends AuditableEntity {
     }
     public void clearHeaderRules() {
         headerRules.clear();
+    }
+
+    // Per-user limit is not configured separately yet: one tenth of the route limit, at least 1
+    public Integer getPerUserRequestsPerMinute() {
+        return requestsPerMinute == null ? null : Math.max(1, requestsPerMinute / 10);
     }
 }

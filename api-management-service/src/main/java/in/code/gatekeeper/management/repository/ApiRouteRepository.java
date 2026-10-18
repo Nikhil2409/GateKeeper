@@ -13,21 +13,20 @@ import java.util.Optional;
  */
 public interface ApiRouteRepository extends JpaRepository<ApiRoute, Long> {
 
-    @EntityGraph(attributePaths = {"allowedMethods", "headerRules"})
+    @EntityGraph(attributePaths = {"allowedMethods", "allowedHeaders", "headerRules"})
     List<ApiRoute> findAllByOrganizationIdOrderByRouteId(Long organizationId);
 
-    @EntityGraph(attributePaths = {"allowedMethods", "headerRules"})
+    @EntityGraph(attributePaths = {"allowedMethods", "allowedHeaders", "headerRules"})
     Optional<ApiRoute> findByOrganizationIdAndRouteId(Long organizationId, String routeId);
 
     boolean existsByOrganizationIdAndRouteId(Long organizationId, String routeId);
-
-    boolean existsByOrganizationIdAndPathPattern(Long organizationId, String pathPattern);
 
     // Gateway snapshot: every active route of every active organization, children loaded in one query
     @Query("""
             select distinct r from ApiRoute r
             join fetch r.organization o
             left join fetch r.allowedMethods
+            left join fetch r.allowedHeaders
             left join fetch r.headerRules
             where r.active = true
               and o.status = in.code.gatekeeper.management.enums.OrganizationStatus.ACTIVE

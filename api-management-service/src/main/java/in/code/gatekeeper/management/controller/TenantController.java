@@ -2,7 +2,9 @@ package in.code.gatekeeper.management.controller;
 
 import in.code.gatekeeper.management.aop.RequiredRole;
 import in.code.gatekeeper.management.dto.requestDto.RouteRequest;
+import in.code.gatekeeper.management.dto.requestDto.TokenSettingsRequest;
 import in.code.gatekeeper.management.dto.responseDto.RouteResponse;
+import in.code.gatekeeper.management.dto.responseDto.TokenSettingsResponse;
 import in.code.gatekeeper.management.enums.RoleName;
 import in.code.gatekeeper.management.service.AuthService;
 import in.code.gatekeeper.management.service.TenantService;
@@ -34,6 +36,17 @@ import java.util.List;
 public class TenantController {
 
     private final TenantService tenantService;
+
+    @GetMapping("/token-settings")
+    public ResponseEntity<TokenSettingsResponse> getTokenSettings(@AuthenticationPrincipal Jwt jwt) {
+        return ResponseEntity.ok(tenantService.getTokenSettings(AuthService.organizationIdOf(jwt)));
+    }
+
+    @PutMapping("/token-settings")
+    public ResponseEntity<TokenSettingsResponse> saveTokenSettings(@AuthenticationPrincipal Jwt jwt,
+                                                                   @Valid @RequestBody TokenSettingsRequest request) {
+        return ResponseEntity.ok(tenantService.saveTokenSettings(AuthService.organizationIdOf(jwt), request));
+    }
 
     @GetMapping("/routes")
     public ResponseEntity<List<RouteResponse>> listRoutes(@AuthenticationPrincipal Jwt jwt) {
