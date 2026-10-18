@@ -3,6 +3,7 @@ package in.code.gatekeeper.gateway.controller;
 import in.code.gatekeeper.gateway.check.HeaderFilter;
 import in.code.gatekeeper.gateway.check.RequestGuard;
 import in.code.gatekeeper.gateway.check.RequestGuard.PublicPath;
+import in.code.gatekeeper.gateway.check.TokenCheck;
 import in.code.gatekeeper.gateway.check.UpstreamTargetGuard;
 import in.code.gatekeeper.gateway.client.UpstreamClient;
 import in.code.gatekeeper.gateway.exception.GatewayException;
@@ -26,8 +27,8 @@ import java.util.UUID;
  * Every tenant request: /{organizationSlug}/{route path}. The gateway's own /_gateway endpoints are more specific
  * mappings and win. Each step is its own class, run in this order:
  *
- *   RequestGuard -> organization -> RouteMatcher -> [token check] -> [quota, rate limit, idempotency]
- *   -> UpstreamTargetGuard -> HeaderFilter -> UpstreamClient -> HeaderFilter (response)
+ *   RequestGuard -> organization -> RouteMatcher -> TokenCheck -> UpstreamTargetGuard -> HeaderFilter
+ *   -> UpstreamClient -> HeaderFilter (response)
  */
 @RestController
 @RequiredArgsConstructor
@@ -35,6 +36,7 @@ public class ProxyController {
 
     private final RequestGuard requestGuard;
     private final RouteRegistry routeRegistry;
+    private final TokenCheck tokenCheck;
     private final UpstreamTargetGuard upstreamTargetGuard;
     private final HeaderFilter headerFilter;
     private final UpstreamClient upstreamClient;
@@ -53,15 +55,16 @@ public class ProxyController {
         if (!route.allowedMethods().contains(request.getMethod())) {
             throw GatewayException.methodNotAllowed(route.allowedMethods());
         }
+        // the token is checked before the body is read, so unauthenticated callers can't make the gateway buffer 1 MB
+        String userId = tokenCheck.check(organization, request);
         byte[] body = requestGuard.readBody(request);
 
-        // TODO: verify the user token with organization.tokenSettings()
         // TODO: per-user quota, per-route rate limit, idempotency (Redis)
 
         URI target = targetUri(route, path);
         upstreamTargetGuard.check(target);
         HttpResponse<InputStream> upstream = upstreamClient.send(request.getMethod(), target,
-                headerFilter.requestHeaders(request, route, requestId), body, route.responseTimeoutMs());
+                headerFilter.requestHeaders(request, route, requestId, userId), body, route.responseTimeoutMs());
 
         response.setStatus(upstream.statusCode());
         headerFilter.responseHeaders(upstream.headers(), route)

@@ -16,14 +16,16 @@ import java.util.Set;
 
 /**
  * Decides which headers cross the gateway. Request: deny by default, only the route's allowlist (plus Content-Type
- * and Accept) reaches the upstream, then the tenant's REQUEST rules, then the gateway's own X-Forwarded-* and
- * X-Request-Id. Response: everything except connection-level headers, then the tenant's RESPONSE rules.
+ * and Accept) reaches the upstream, then the tenant's REQUEST rules, then the gateway's own X-Forwarded-*,
+ * X-Request-Id and X-User-Id (the verified token subject, which callers can never send themselves).
+ * Response: everything except connection-level headers, then the tenant's RESPONSE rules.
  * Header names are compared lowercase.
  */
 @Component
 public class HeaderFilter {
 
     public static final String REQUEST_ID = "x-request-id";
+    public static final String USER_ID = "x-user-id";
 
     private static final Set<String> ALWAYS_FORWARDED = Set.of("content-type", "accept");
 
@@ -33,9 +35,10 @@ public class HeaderFilter {
 
     // Set by the JDK HTTP client itself (it refuses them) or by the gateway; tenant rules can't touch these either
     private static final Set<String> GATEWAY_MANAGED = Set.of("host", "content-length", "expect",
-            "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", REQUEST_ID);
+            "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", REQUEST_ID, USER_ID);
 
-    public Map<String, List<String>> requestHeaders(HttpServletRequest request, RouteConfig route, String requestId) {
+    public Map<String, List<String>> requestHeaders(HttpServletRequest request, RouteConfig route, String requestId,
+                                                    String userId) {
         Map<String, List<String>> headers = new LinkedHashMap<>();
         for (String name : Collections.list(request.getHeaderNames())) {
             String lower = name.toLowerCase(Locale.ROOT);
@@ -53,6 +56,7 @@ public class HeaderFilter {
             headers.put("x-forwarded-host", List.of(request.getHeader("host")));
         }
         headers.put(REQUEST_ID, List.of(requestId));
+        headers.put(USER_ID, List.of(userId));
         return headers;
     }
 
