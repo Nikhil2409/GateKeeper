@@ -15,7 +15,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
- * Platform admins and the gateway service account have no organization.
+ * Platform admins have no organization.
  * An organization has at most one active tenant admin (enforced by a functional unique key).
  */
 @Entity
