@@ -9,6 +9,7 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
+import org.springframework.http.HttpStatus;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.json.JsonMapper;
@@ -124,6 +125,14 @@ public class IdempotencyCheck {
         } catch (DataAccessException e) {
             // the caller still gets its response; a retry within the lock TTL gets 409, after it runs again
             log.warn("Could not store idempotent response for {}: {}", ticket.redisKey(), e.getMessage());
+        }
+    }
+
+    // 502: the upstream never answered, so a retry is safe and the key is freed. 504: it may have run the request, so
+    // the key stays locked until its TTL ends and an early retry gets 409 instead of a possible second execution.
+    public void upstreamFailed(Ticket ticket, GatewayException failure) {
+        if (failure.getStatus() != HttpStatus.GATEWAY_TIMEOUT) {
+            release(ticket);
         }
     }
 

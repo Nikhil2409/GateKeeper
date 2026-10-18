@@ -1,6 +1,8 @@
 package in.code.gatekeeper.gateway.check;
 
+import in.code.gatekeeper.gateway.check.RequestGuard.PublicPath;
 import in.code.gatekeeper.gateway.exception.GatewayException;
+import in.code.gatekeeper.gateway.model.RouteConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -33,6 +35,20 @@ public class UpstreamTargetGuard {
                                @Value("${gateway.upstream.allow-loopback}") boolean allowLoopback) {
         this.blockedHosts = blockedHosts.stream().map(host -> host.toLowerCase(Locale.ROOT)).collect(Collectors.toSet());
         this.allowLoopback = allowLoopback;
+    }
+
+    // targetBaseUrl + targetPathPrefix + the request path exactly as received (+ query), checked before it is used
+    public URI resolve(RouteConfig route, PublicPath path) {
+        String target = route.targetBaseUrl() + route.targetPathPrefix() + path.path()
+                + (path.rawQuery() == null ? "" : "?" + path.rawQuery());
+        URI uri;
+        try {
+            uri = URI.create(target);
+        } catch (IllegalArgumentException e) {
+            throw GatewayException.badRequest("Invalid characters in path or query");
+        }
+        check(uri);
+        return uri;
     }
 
     public void check(URI target) {
