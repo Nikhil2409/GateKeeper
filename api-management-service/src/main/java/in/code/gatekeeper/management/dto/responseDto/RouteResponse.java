@@ -9,7 +9,7 @@ import java.util.List;
 public record RouteResponse(String routeId, String name, String pathPattern, String targetBaseUrl,
                             String targetPathPrefix, List<HttpMethodType> allowedMethods,
                             Integer requestsPerMinute, int responseTimeoutMs, boolean idempotencyEnabled,
-                            List<HeaderRuleResponse> headerRules, boolean active, long configurationVersion,
+                            List<HeaderRuleResponse> headerRules, boolean active,
                             LocalDateTime dateCreated, LocalDateTime dateUpdated) {
 
     public static RouteResponse from(ApiRoute route) {
@@ -18,6 +18,6 @@ public record RouteResponse(String routeId, String name, String pathPattern, Str
                 route.getAllowedMethods().stream().sorted().toList(),
                 route.getRequestsPerMinute(), route.getResponseTimeoutMs(), route.isIdempotencyEnabled(),
                 route.getHeaderRules().stream().map(HeaderRuleResponse::from).toList(),
-                route.isActive(), route.getConfigurationVersion(), route.getDateCreated(), route.getDateUpdated());
+                route.isActive(), route.getDateCreated(), route.getDateUpdated());
     }
 }

@@ -1,5 +1,8 @@
-# Local secrets for start.ps1
+# Local secrets
 .env
 
 # IDE
 .idea/
+
+# Personal design notes
+DESIGN_DECISIONS.txt

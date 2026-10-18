@@ -56,10 +56,16 @@ public class PlatformService {
         return OrganizationResponse.from(findOrganization(id));
     }
 
-    // Suspending blocks the tenant admin immediately and removes the org's routes from the gateway snapshot
+    // Suspending blocks the tenant admin immediately and takes the org's routes off the gateway,
+    // so it is a configuration change and bumps the organization's version
     public OrganizationResponse changeOrganizationStatus(Long id, OrganizationStatus status) {
-        Organization organization = findOrganization(id);
-        organization.setStatus(status);
+        Organization organization = organizationRepository.findByIdForUpdate(id)
+                .filter(Organization::isActive)
+                .orElseThrow(() -> ApiException.notFound("Organization " + id + " not found"));
+        if (organization.getStatus() != status) {
+            organization.setStatus(status);
+            bumpVersion(organization);
+        }
         return OrganizationResponse.from(organizationRepository.saveAndFlush(organization));
     }
 
@@ -102,6 +108,11 @@ public class PlatformService {
     // Soft delete: existing tokens stop working on the next request and the org can get a new admin
     public void deleteTenantAdmin(Long id) {
         findTenantAdmin(id).setActive(false);
+    }
+
+    // Every configuration change inside an organization bumps its single version
+    private void bumpVersion(Organization organization) {
+        organization.incrementVersion();
     }
 
     private Organization findOrganization(Long id) {

@@ -4,6 +4,7 @@ import in.code.gatekeeper.management.dto.requestDto.HeaderRuleRequest;
 import in.code.gatekeeper.management.dto.requestDto.RouteRequest;
 import in.code.gatekeeper.management.dto.responseDto.RouteResponse;
 import in.code.gatekeeper.management.entity.ApiRoute;
+import in.code.gatekeeper.management.entity.Organization;
 import in.code.gatekeeper.management.entity.RouteHeaderRule;
 import in.code.gatekeeper.management.enums.HeaderAction;
 import in.code.gatekeeper.management.exception.ApiException;
@@ -40,6 +41,7 @@ public class TenantService {
     }
 
     public RouteResponse createRoute(Long organizationId, RouteRequest request) {
+        Organization organization = lockOrganization(organizationId);
         if (apiRouteRepository.existsByOrganizationIdAndRouteId(organizationId, request.routeId())) {
             throw ApiException.conflict("Route '" + request.routeId() + "' already exists (reactivate it if it was deleted)");
         }
@@ -47,8 +49,9 @@ public class TenantService {
             throw ApiException.conflict("Path '" + request.pathPattern() + "' is already mapped by another route");
         }
 
-        ApiRoute route = new ApiRoute(organizationRepository.getReferenceById(organizationId), request.routeId());
+        ApiRoute route = new ApiRoute(organization, request.routeId());
         apply(route, request);
+        bumpVersion(organization);
         return RouteResponse.from(apiRouteRepository.save(route));
     }
 
@@ -56,6 +59,7 @@ public class TenantService {
         if (!routeId.equals(request.routeId())) {
             throw ApiException.badRequest("routeId cannot be changed");
         }
+        Organization organization = lockOrganization(organizationId);
         ApiRoute route = findRoute(organizationId, routeId);
         if (!route.getPathPattern().equals(request.pathPattern())
                 && apiRouteRepository.existsByOrganizationIdAndPathPattern(organizationId, request.pathPattern())) {
@@ -63,18 +67,30 @@ public class TenantService {
         }
 
         apply(route, request);
-        route.incrementVersion();
+        bumpVersion(organization);
         return RouteResponse.from(apiRouteRepository.saveAndFlush(route));
     }
 
     public RouteResponse setRouteActive(Long organizationId, String routeId, boolean active) {
+        Organization organization = lockOrganization(organizationId);
         ApiRoute route = findRoute(organizationId, routeId);
         if (route.isActive() != active) {
             route.setActive(active);
-            route.incrementVersion();
+            bumpVersion(organization);
             apiRouteRepository.saveAndFlush(route);
         }
         return RouteResponse.from(route);
+    }
+
+    // Taken first by every write, so changes inside one organization are serialized and versioned in order
+    private Organization lockOrganization(Long organizationId) {
+        return organizationRepository.findByIdForUpdate(organizationId)
+                .orElseThrow(() -> ApiException.notFound("Organization " + organizationId + " not found"));
+    }
+
+    // Every configuration change inside an organization bumps its single version
+    private void bumpVersion(Organization organization) {
+        organization.incrementVersion();
     }
 
     private ApiRoute findRoute(Long organizationId, String routeId) {

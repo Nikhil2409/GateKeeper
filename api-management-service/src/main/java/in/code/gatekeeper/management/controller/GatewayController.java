@@ -1,7 +1,7 @@
 package in.code.gatekeeper.management.controller;
 
 import in.code.gatekeeper.management.aop.RequiredRole;
-import in.code.gatekeeper.management.dto.responseDto.GatewayRouteResponse;
+import in.code.gatekeeper.management.dto.responseDto.GatewayOrganizationResponse;
 import in.code.gatekeeper.management.enums.RoleName;
 import in.code.gatekeeper.management.service.GatewayService;
 import lombok.RequiredArgsConstructor;
@@ -24,7 +24,7 @@ public class GatewayController {
     private final GatewayService gatewayService;
 
     @GetMapping("/routes")
-    public ResponseEntity<List<GatewayRouteResponse>> getRoutes() {
+    public ResponseEntity<List<GatewayOrganizationResponse>> getRoutes() {
         return ResponseEntity.ok(gatewayService.getRouteSnapshot());
     }
 }

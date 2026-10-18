@@ -35,10 +35,18 @@ public class Organization extends AuditableEntity {
     @Column(nullable = false, length = 20)
     private OrganizationStatus status;
 
+    // The only configuration version: bumped on every change to this organization's routes or status
+    @Column(name = "configuration_version", nullable = false)
+    private long configurationVersion;
+
     public Organization(String name, String slug) {
         this.name = name;
         this.slug = slug;
         this.status = OrganizationStatus.ACTIVE;
+    }
+
+    public void incrementVersion() {
+        configurationVersion++;
     }
 
     public boolean isOperational() {

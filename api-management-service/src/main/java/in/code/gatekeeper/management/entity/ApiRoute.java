@@ -64,9 +64,6 @@ public class ApiRoute extends AuditableEntity {
     @Column(name = "idempotency_enabled", nullable = false)
     private boolean idempotencyEnabled;
 
-    @Column(name = "configuration_version", nullable = false)
-    private long configurationVersion = 1;
-
     @ElementCollection(fetch = FetchType.LAZY)
     @CollectionTable(name = "route_allowed_methods", joinColumns = @JoinColumn(name = "route_pk"))
     @Enumerated(EnumType.STRING)
@@ -87,9 +84,5 @@ public class ApiRoute extends AuditableEntity {
     }
     public void clearHeaderRules() {
         headerRules.clear();
-    }
-
-    public void incrementVersion() {
-        configurationVersion++;
     }
 }
