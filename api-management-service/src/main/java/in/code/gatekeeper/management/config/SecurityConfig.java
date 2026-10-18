@@ -1,5 +1,6 @@
 package in.code.gatekeeper.management.config;
 
+import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
@@ -73,6 +74,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/health", "/error").permitAll()
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
+                        // public signing key, so other services (analytics) can verify our tokens themselves
+                        .requestMatchers(HttpMethod.GET, "/.well-known/jwks.json").permitAll()
                         // role checks happen per controller in RoleCheckAspect (@RequiredRole)
                         .anyRequest().authenticated()
                 )
@@ -100,10 +103,15 @@ public class SecurityConfig {
         return decoder;
     }
 
+    // The signing key with a key ID (its thumbprint), so tokens carry a "kid" that verifiers match against the JWKS
     @Bean
-    public JwtEncoder jwtEncoder() {
-        RSAKey rsaKey = new RSAKey.Builder(publicKey).privateKey(privateKey).build();
-        return new NimbusJwtEncoder(new ImmutableJWKSet<>(new JWKSet(rsaKey)));
+    public JWKSet signingKeys() throws JOSEException {
+        return new JWKSet(new RSAKey.Builder(publicKey).privateKey(privateKey).keyIDFromThumbprint().build());
+    }
+
+    @Bean
+    public JwtEncoder jwtEncoder(JWKSet signingKeys) {
+        return new NimbusJwtEncoder(new ImmutableJWKSet<>(signingKeys));
     }
 
     @Bean
