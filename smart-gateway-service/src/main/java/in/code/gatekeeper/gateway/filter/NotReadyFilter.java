@@ -35,6 +35,7 @@ public class NotReadyFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws IOException, ServletException {
+        request.setAttribute(TrafficEventFilter.REJECT_REASON, "NOT_READY");
         response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
         response.setHeader(HttpHeaders.RETRY_AFTER, "5");
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);

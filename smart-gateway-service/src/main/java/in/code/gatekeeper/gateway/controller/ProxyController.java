@@ -12,6 +12,7 @@ import in.code.gatekeeper.gateway.check.TokenCheck;
 import in.code.gatekeeper.gateway.check.UpstreamTargetGuard;
 import in.code.gatekeeper.gateway.client.UpstreamClient;
 import in.code.gatekeeper.gateway.exception.GatewayException;
+import in.code.gatekeeper.gateway.filter.TrafficEventFilter;
 import in.code.gatekeeper.gateway.model.RouteConfig;
 import in.code.gatekeeper.gateway.registry.OrgRoutes;
 import in.code.gatekeeper.gateway.registry.RouteRegistry;
@@ -29,7 +30,6 @@ import java.net.URI;
 import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * Every tenant request: /{organizationSlug}/{route path}. The gateway's own /_gateway endpoints are more specific
@@ -54,15 +54,17 @@ public class ProxyController {
 
     @RequestMapping("/{slug}/**")
     public void proxy(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        String requestId = UUID.randomUUID().toString();
-        response.setHeader(HeaderFilter.REQUEST_ID, requestId);   // on every answer, errors included
+        String requestId = (String) request.getAttribute(TrafficEventFilter.REQUEST_ID);   // set by TrafficEventFilter
 
         PublicPath path = requestGuard.parsePath(request.getRequestURI(), request.getQueryString());
         OrgRoutes organization = routeRegistry.find(path.slug())
                 .filter(OrgRoutes::isActive)
                 .orElseThrow(GatewayException::notFound);
+        request.setAttribute(TrafficEventFilter.ORGANIZATION_ID, organization.organizationId());
+        request.setAttribute(TrafficEventFilter.ORGANIZATION_SLUG, organization.slug());
         RouteConfig route = organization.matcher().match(path.segments())
                 .orElseThrow(GatewayException::notFound);
+        request.setAttribute(TrafficEventFilter.ROUTE_ID, route.routeId());
         if (!route.allowedMethods().contains(request.getMethod())) {
             throw GatewayException.methodNotAllowed(route.allowedMethods());
         }

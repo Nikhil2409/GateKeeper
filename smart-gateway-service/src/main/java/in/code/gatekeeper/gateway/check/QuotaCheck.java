@@ -27,7 +27,7 @@ public class QuotaCheck {
         counter.hit("quota:" + organization.organizationId() + ":" + route.routeId() + ":" + userId)
                 .filter(window -> window.count() > limit)
                 .ifPresent(window -> {
-                    throw GatewayException.tooManyRequests("Request quota for this user exceeded",
+                    throw GatewayException.tooManyRequests("QUOTA_EXCEEDED", "Request quota for this user exceeded",
                             window.secondsLeft());
                 });
     }

@@ -1,6 +1,7 @@
 package in.code.gatekeeper.gateway.check;
 
 import in.code.gatekeeper.gateway.exception.GatewayException;
+import in.code.gatekeeper.gateway.filter.TrafficEventFilter;
 import in.code.gatekeeper.gateway.model.RouteConfig;
 import in.code.gatekeeper.gateway.registry.OrgRoutes;
 import jakarta.servlet.http.HttpServletRequest;
@@ -80,6 +81,7 @@ public class IdempotencyCheck {
         }
         String redisKey = "idem:" + organization.organizationId() + ":" + route.routeId() + ":"
                 + (userId == null ? "-" : userId) + ":" + key;
+        request.setAttribute(TrafficEventFilter.IDEMPOTENCY_KEY, mask(key));
         String fingerprint = fingerprint(request, body);
         // held while the upstream call runs; if this gateway dies mid-call the key frees itself
         Duration lockTtl = Duration.ofMillis(route.responseTimeoutMs()).plusSeconds(10);
@@ -88,20 +90,25 @@ public class IdempotencyCheck {
             String inProgress = jsonMapper.writeValueAsString(
                     new StoredResponse(IN_PROGRESS, fingerprint, 0, Map.of(), null));
             if (Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(redisKey, inProgress, lockTtl))) {
+                request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "EXECUTED");
                 return new Ticket(redisKey, fingerprint, null);
             }
             String existing = redis.opsForValue().get(redisKey);
             if (existing == null) {
+                request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "IN_PROGRESS_CONFLICT");
                 // expired between the two calls: let the client retry rather than racing for it here
                 throw GatewayException.conflict("A request with this " + HEADER + " is still in progress");
             }
             StoredResponse stored = jsonMapper.readValue(existing, StoredResponse.class);
             if (!stored.fingerprint().equals(fingerprint)) {
+                request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "BODY_MISMATCH");
                 throw GatewayException.unprocessable(HEADER + " was already used for a different request");
             }
             if (!COMPLETED.equals(stored.state())) {
+                request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "IN_PROGRESS_CONFLICT");
                 throw GatewayException.conflict("A request with this " + HEADER + " is still in progress");
             }
+            request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "REPLAYED");
             return new Ticket(redisKey, fingerprint, stored);
         } catch (DataAccessException e) {
             log.warn("Redis unavailable for idempotency key {}: {}", redisKey, e.getMessage());
@@ -130,6 +137,11 @@ public class IdempotencyCheck {
         } catch (DataAccessException e) {
             log.warn("Could not release idempotency key {}: {}", ticket.redisKey(), e.getMessage());
         }
+    }
+
+    // Analytics only ever sees the edges of a key: enough to recognise it, useless to replay it
+    private static String mask(String key) {
+        return key.length() <= 8 ? "…" : key.substring(0, 4) + "…" + key.substring(key.length() - 4);
     }
 
     // Same key with a different method, path, query or body is a client bug, not a retry

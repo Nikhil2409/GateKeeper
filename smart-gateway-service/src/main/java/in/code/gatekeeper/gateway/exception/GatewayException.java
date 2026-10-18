@@ -9,18 +9,25 @@ import java.util.TreeSet;
 
 /**
  * Every reason the gateway answers a request itself instead of forwarding it. The message goes to the caller, so it
- * never names internal hosts or addresses; details are logged instead.
+ * never names internal hosts or addresses; details are logged instead. reason is a stable code for traffic events
+ * (the status name, or something more specific such as RATE_LIMITED vs QUOTA_EXCEEDED for a 429).
  */
 @Getter
 public class GatewayException extends RuntimeException {
 
     private final HttpStatus status;
     private final HttpHeaders headers;
+    private final String reason;
 
-    private GatewayException(HttpStatus status, String message, HttpHeaders headers) {
+    private GatewayException(HttpStatus status, String reason, String message, HttpHeaders headers) {
         super(message);
         this.status = status;
+        this.reason = reason;
         this.headers = headers;
+    }
+
+    private GatewayException(HttpStatus status, String message, HttpHeaders headers) {
+        this(status, status.name(), message, headers);
     }
 
     private GatewayException(HttpStatus status, String message) {
@@ -62,10 +69,11 @@ public class GatewayException extends RuntimeException {
         return new GatewayException(HttpStatus.UNPROCESSABLE_CONTENT, message);
     }
 
-    public static GatewayException tooManyRequests(String message, long retryAfterSeconds) {
+    // reason: RATE_LIMITED (route limit) or QUOTA_EXCEEDED (per-user quota)
+    public static GatewayException tooManyRequests(String reason, String message, long retryAfterSeconds) {
         HttpHeaders headers = new HttpHeaders();
         headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
-        return new GatewayException(HttpStatus.TOO_MANY_REQUESTS, message, headers);
+        return new GatewayException(HttpStatus.TOO_MANY_REQUESTS, reason, message, headers);
     }
 
     public static GatewayException serviceUnavailable(String message) {

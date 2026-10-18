@@ -26,7 +26,8 @@ public class RateLimitCheck {
         counter.hit("rate:" + organization.organizationId() + ":" + route.routeId())
                 .filter(window -> window.count() > limit)
                 .ifPresent(window -> {
-                    throw GatewayException.tooManyRequests("Rate limit for this route exceeded", window.secondsLeft());
+                    throw GatewayException.tooManyRequests("RATE_LIMITED", "Rate limit for this route exceeded",
+                            window.secondsLeft());
                 });
     }
 }
