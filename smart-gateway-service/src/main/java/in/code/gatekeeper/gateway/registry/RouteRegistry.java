@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * The gateway's in-memory copy of every organization's configuration, keyed by slug (the first path segment).
  *
  * Reads (every request) never lock: one map lookup returns an immutable OrgRoutes.
- * Writes (snapshot, resync, later Kafka events) replace an organization's entry only if the incoming version is
+ * Writes (messages from gateway.org-config) replace an organization's entry only if the incoming version is
  * newer, atomically per organization. Same or older versions are ignored, which makes duplicate and out-of-order
  * updates harmless. Suspended/deleted organizations stay in the map with no routes, so their version is remembered
  * and a late older update can't bring their routes back.
@@ -24,7 +24,7 @@ public class RouteRegistry {
 
     private final ConcurrentHashMap<String, OrgRoutes> organizations = new ConcurrentHashMap<>();
     private volatile boolean ready;
-    private volatile Instant lastSnapshotAt;
+    private volatile Instant lastUpdateAt;
 
     // Returns true if the configuration replaced what we had, false if it was stale and ignored
     public boolean apply(OrganizationConfig config) {
@@ -36,16 +36,15 @@ public class RouteRegistry {
             applied.set(true);
             return OrgRoutes.from(config);
         });
+        if (applied.get()) {
+            lastUpdateAt = Instant.now();
+        }
         return applied.get();
     }
 
-    // A full snapshot from api-management: every organization goes through the same version rule.
-    // Returns how many organizations changed.
-    public int applySnapshot(List<OrganizationConfig> snapshot) {
-        int changed = (int) snapshot.stream().filter(this::apply).count();
-        lastSnapshotAt = Instant.now();
+    // Called once the whole topic has been read up to where it ended at startup: the table is complete
+    public void markReady() {
         ready = true;
-        return changed;
     }
 
     public Optional<OrgRoutes> find(String slug) {
@@ -56,12 +55,12 @@ public class RouteRegistry {
         return List.copyOf(organizations.values());
     }
 
-    // Not ready until the first snapshot loaded: serving with an empty or partial table would reject valid traffic
+    // Not ready until the configuration is complete: serving with a partial table would reject valid traffic
     public boolean isReady() {
         return ready;
     }
 
-    public Instant lastSnapshotAt() {
-        return lastSnapshotAt;
+    public Instant lastUpdateAt() {
+        return lastUpdateAt;
     }
 }

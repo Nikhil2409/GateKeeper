@@ -1,6 +1,7 @@
 package in.code.gatekeeper.gateway.controller;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import in.code.gatekeeper.gateway.client.OrgConfigConsumer;
 import in.code.gatekeeper.gateway.client.RedisStatus;
 import in.code.gatekeeper.gateway.registry.OrgRoutes;
 import in.code.gatekeeper.gateway.registry.RouteRegistry;
@@ -27,6 +28,7 @@ public class GatewayController {
 
     private final RouteRegistry routeRegistry;
     private final RedisStatus redisStatus;
+    private final OrgConfigConsumer orgConfigConsumer;
 
     @Value("${gateway.instance-id}")
     private String instanceId;
@@ -39,7 +41,7 @@ public class GatewayController {
             return ResponseEntity.ok(new HealthResponse("UP", instanceId, null, redisStatus.status()));
         }
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body(new HealthResponse("NOT_READY", instanceId, "No configuration loaded yet",
+                .body(new HealthResponse("NOT_READY", instanceId, orgConfigConsumer.state(),
                         redisStatus.status()));
     }
 
@@ -51,14 +53,14 @@ public class GatewayController {
                         org.tokenSettings() != null, org.loadedAt()))
                 .toList();
         return ResponseEntity.ok(new StatusResponse(instanceId, routeRegistry.isReady(),
-                routeRegistry.lastSnapshotAt(), organizations));
+                routeRegistry.lastUpdateAt(), organizations));
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record HealthResponse(String status, String instanceId, String reason, String redis) {
     }
 
-    public record StatusResponse(String instanceId, boolean ready, Instant lastSnapshotAt,
+    public record StatusResponse(String instanceId, boolean ready, Instant lastUpdateAt,
                                  List<OrganizationStatus> organizations) {
     }
 
