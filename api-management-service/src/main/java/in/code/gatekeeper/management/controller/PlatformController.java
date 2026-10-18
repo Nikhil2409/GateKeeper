@@ -4,10 +4,13 @@ import in.code.gatekeeper.management.aop.RequiredRole;
 import in.code.gatekeeper.management.dto.requestDto.OrganizationRequest;
 import in.code.gatekeeper.management.dto.requestDto.PasswordResetRequest;
 import in.code.gatekeeper.management.dto.requestDto.TenantAdminRequest;
+import in.code.gatekeeper.management.dto.responseDto.KafkaMessageResponse;
+import in.code.gatekeeper.management.dto.responseDto.KafkaOverviewResponse;
 import in.code.gatekeeper.management.dto.responseDto.OrganizationResponse;
 import in.code.gatekeeper.management.dto.responseDto.TenantAdminResponse;
 import in.code.gatekeeper.management.enums.OrganizationStatus;
 import in.code.gatekeeper.management.enums.RoleName;
+import in.code.gatekeeper.management.kafka.KafkaInspector;
 import in.code.gatekeeper.management.service.PlatformService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +23,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -34,6 +38,7 @@ import java.util.List;
 public class PlatformController {
 
     private final PlatformService platformService;
+    private final KafkaInspector kafkaInspector;
 
     @PostMapping("/organizations")
     public ResponseEntity<OrganizationResponse> createOrganization(@Valid @RequestBody OrganizationRequest request) {
@@ -85,5 +90,17 @@ public class PlatformController {
     public ResponseEntity<Void> deleteTenantAdmin(@PathVariable Long id) {
         platformService.deleteTenantAdmin(id);
         return ResponseEntity.noContent().build();
+    }
+
+    // Read-only Kafka view: brokers, topics, consumer groups and their lag (status DOWN when Kafka is unreachable)
+    @GetMapping("/kafka")
+    public ResponseEntity<KafkaOverviewResponse> kafkaOverview() {
+        return ResponseEntity.ok(kafkaInspector.overview());
+    }
+
+    @GetMapping("/kafka/topics/{topic}/messages")
+    public ResponseEntity<List<KafkaMessageResponse>> kafkaMessages(@PathVariable String topic,
+                                                                    @RequestParam(defaultValue = "20") int limit) {
+        return ResponseEntity.ok(kafkaInspector.latestMessages(topic, limit));
     }
 }
