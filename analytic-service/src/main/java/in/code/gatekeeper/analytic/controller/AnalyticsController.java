@@ -1,12 +1,15 @@
 package in.code.gatekeeper.analytic.controller;
 
+import in.code.gatekeeper.analytic.dto.responseDto.IdempotencyStatsResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.OrganizationStatsResponse;
+import in.code.gatekeeper.analytic.dto.responseDto.RateLimitUsageResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.RequestLogPageResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.RouteStatsResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.SummaryResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.TimeBucketResponse;
 import in.code.gatekeeper.analytic.enums.TimeRange;
 import in.code.gatekeeper.analytic.security.AnalyticsUser;
+import in.code.gatekeeper.analytic.service.PolicyStatsService;
 import in.code.gatekeeper.analytic.service.RequestLogService;
 import in.code.gatekeeper.analytic.service.TrafficStatsService;
 import lombok.RequiredArgsConstructor;
@@ -32,6 +35,7 @@ public class AnalyticsController {
 
     private final TrafficStatsService trafficStatsService;
     private final RequestLogService requestLogService;
+    private final PolicyStatsService policyStatsService;
 
     @GetMapping("/summary")
     public ResponseEntity<SummaryResponse> summary(@AuthenticationPrincipal Jwt jwt,
@@ -71,5 +75,17 @@ public class AnalyticsController {
                                                            @RequestParam(defaultValue = "25") int size) {
         return ResponseEntity.ok(requestLogService.requests(TimeRange.from(range), AnalyticsUser.from(jwt).scope(org),
                 status, q, page, size));
+    }
+
+    @GetMapping("/rate-limits")
+    public ResponseEntity<List<RateLimitUsageResponse>> rateLimits(@AuthenticationPrincipal Jwt jwt,
+                                                                   @RequestParam(required = false) Long org) {
+        return ResponseEntity.ok(policyStatsService.rateLimits(AnalyticsUser.from(jwt).scope(org)));
+    }
+
+    @GetMapping("/idempotency")
+    public ResponseEntity<IdempotencyStatsResponse> idempotency(@AuthenticationPrincipal Jwt jwt,
+                                                                @RequestParam(required = false) Long org) {
+        return ResponseEntity.ok(policyStatsService.idempotency(AnalyticsUser.from(jwt).scope(org)));
     }
 }
