@@ -10,11 +10,13 @@ import in.code.gatekeeper.management.entity.Organization;
 import in.code.gatekeeper.management.entity.Role;
 import in.code.gatekeeper.management.enums.OrganizationStatus;
 import in.code.gatekeeper.management.enums.RoleName;
+import in.code.gatekeeper.management.kafka.OrganizationConfigChangedEvent;
 import in.code.gatekeeper.management.exception.ApiException;
 import in.code.gatekeeper.management.repository.ManagementUserRepository;
 import in.code.gatekeeper.management.repository.OrganizationRepository;
 import in.code.gatekeeper.management.repository.RoleRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,6 +32,7 @@ public class PlatformService {
     private final ManagementUserRepository managementUserRepository;
     private final RoleRepository roleRepository;
     private final PasswordEncoder passwordEncoder;
+    private final ApplicationEventPublisher eventPublisher;
 
     // ---------- organizations ----------
 
@@ -41,7 +44,10 @@ public class PlatformService {
         if (organizationRepository.existsBySlug(request.slug())) {
             throw ApiException.conflict("Organization slug '" + request.slug() + "' is already taken");
         }
-        return OrganizationResponse.from(organizationRepository.save(new Organization(name, request.slug())));
+        Organization organization = organizationRepository.save(new Organization(name, request.slug()));
+        // A new organization is a configuration change too (version 1): gateways and analytics know it right away
+        bumpVersion(organization);
+        return OrganizationResponse.from(organization);
     }
 
     @Transactional(readOnly = true)
@@ -110,9 +116,10 @@ public class PlatformService {
         findTenantAdmin(id).setActive(false);
     }
 
-    // Every configuration change inside an organization bumps its single version
+    // The version bump and the change event always go together; the event is handled after commit
     private void bumpVersion(Organization organization) {
         organization.incrementVersion();
+        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId()));
     }
 
     private Organization findOrganization(Long id) {

@@ -10,11 +10,13 @@ import in.code.gatekeeper.management.entity.Organization;
 import in.code.gatekeeper.management.entity.OrganizationTokenSettings;
 import in.code.gatekeeper.management.entity.RouteHeaderRule;
 import in.code.gatekeeper.management.enums.HeaderAction;
+import in.code.gatekeeper.management.kafka.OrganizationConfigChangedEvent;
 import in.code.gatekeeper.management.exception.ApiException;
 import in.code.gatekeeper.management.repository.ApiRouteRepository;
 import in.code.gatekeeper.management.repository.OrganizationRepository;
 import in.code.gatekeeper.management.repository.OrganizationTokenSettingsRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -38,6 +40,7 @@ public class TenantService {
     private final OrganizationRepository organizationRepository;
     private final OrganizationTokenSettingsRepository tokenSettingsRepository;
     private final UpstreamTargetPolicy upstreamTargetPolicy;
+    private final ApplicationEventPublisher eventPublisher;
 
     // Set by the gateway itself (or hop-by-hop), so a tenant can never allowlist them
     private static final Set<String> GATEWAY_MANAGED_HEADERS = Set.of(
@@ -129,9 +132,10 @@ public class TenantService {
                 .orElseThrow(() -> ApiException.notFound("Organization " + organizationId + " not found"));
     }
 
-    // Every configuration change inside an organization bumps its single version
+    // The version bump and the change event always go together; the event is handled after commit
     private void bumpVersion(Organization organization) {
         organization.incrementVersion();
+        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId()));
     }
 
     private ApiRoute findRoute(Long organizationId, String routeId) {
