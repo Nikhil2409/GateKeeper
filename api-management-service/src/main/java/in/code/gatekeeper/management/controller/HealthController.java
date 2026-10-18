@@ -21,6 +21,7 @@ public class HealthController {
     @GetMapping
     public ResponseEntity<HealthResponse> health() {
         String dbstatus = healthService.getDBStatus();
-        return ResponseEntity.ok(new HealthResponse("UP",dbstatus, LocalDateTime.now()));
+        String kafkaStatus = healthService.getKafkaStatus();
+        return ResponseEntity.ok(new HealthResponse("UP",dbstatus, kafkaStatus, LocalDateTime.now()));
     }
 }
