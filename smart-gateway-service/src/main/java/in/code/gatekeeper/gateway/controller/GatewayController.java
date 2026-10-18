@@ -1,6 +1,7 @@
 package in.code.gatekeeper.gateway.controller;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import in.code.gatekeeper.gateway.client.RedisStatus;
 import in.code.gatekeeper.gateway.registry.OrgRoutes;
 import in.code.gatekeeper.gateway.registry.RouteRegistry;
 import lombok.RequiredArgsConstructor;
@@ -25,18 +26,21 @@ import java.util.List;
 public class GatewayController {
 
     private final RouteRegistry routeRegistry;
+    private final RedisStatus redisStatus;
 
     @Value("${gateway.instance-id}")
     private String instanceId;
 
-    // For load balancers: 503 until the configuration is loaded, so no traffic reaches a gateway that can't route it
+    // For load balancers: 503 until the configuration is loaded, so no traffic reaches a gateway that cannot route it.
+    // redis is reported alongside (UP/DOWN) but does not change readiness: without it the gateway still serves.
     @GetMapping("/health")
     public ResponseEntity<HealthResponse> health() {
         if (routeRegistry.isReady()) {
-            return ResponseEntity.ok(new HealthResponse("UP", instanceId, null));
+            return ResponseEntity.ok(new HealthResponse("UP", instanceId, null, redisStatus.status()));
         }
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body(new HealthResponse("NOT_READY", instanceId, "No configuration loaded yet"));
+                .body(new HealthResponse("NOT_READY", instanceId, "No configuration loaded yet",
+                        redisStatus.status()));
     }
 
     @GetMapping("/status")
@@ -51,7 +55,7 @@ public class GatewayController {
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record HealthResponse(String status, String instanceId, String reason) {
+    public record HealthResponse(String status, String instanceId, String reason, String redis) {
     }
 
     public record StatusResponse(String instanceId, boolean ready, Instant lastSnapshotAt,
