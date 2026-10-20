@@ -1,5 +1,7 @@
 # Gatekeeper
 
+[![CI](https://github.com/Nikhil2409/GateKeeper/actions/workflows/ci.yml/badge.svg)](https://github.com/Nikhil2409/GateKeeper/actions/workflows/ci.yml)
+
 Gatekeeper is an **API gateway for many companies at once**. A company (we call it a *tenant* or *organization*)
 tells Gatekeeper which of its APIs should be reachable. Its users then call those APIs through Gatekeeper, which:
 
@@ -111,7 +113,8 @@ when API Management is down.
 - **To follow section 4:** `curl` and a terminal like bash (on Windows, Git Bash works).
 - **To run the load test:** PowerShell (built into Windows; called `pwsh` on macOS and Linux).
 
-You do **not** need Java, Maven or Node installed. Everything is built inside Docker.
+You do **not** need Java, Maven or Node installed to run the system: everything is built inside Docker. Only
+running the automated tests outside Docker needs JDK 21 (section 5).
 
 ---
 
@@ -255,28 +258,35 @@ curl -s -X PATCH http://localhost:8081/api/platform/organizations/$ORG_ID/suspen
 
 ## 5. Tests
 
-**There are no automated tests yet.** The project has no unit tests, integration tests or CI pipeline. So far,
-behaviour has been checked by hand with scripts like the one above and by the load test (section 6). The load test
-measures behaviour under traffic; it does **not** replace unit or integration tests and doesn't protect against
-regressions.
+Each service has automated regression tests that run against **real** databases and message brokers, started in
+throwaway Docker containers for the test run (MySQL and Kafka for API Management, MongoDB for Analytics, Redis and
+Kafka for the Gateway). Tests call each service over HTTP, the way a client would, so its real security checks run.
+Login providers, Prometheus and the tenants' servers are replaced by small local stand-ins.
 
-This is the project's clearest gap. The next engineering milestone, in priority order:
-1. Tenant isolation and authorization tests (a tenant admin can never read or change another company's data).
-2. Configuration version ordering and rollback tests (newer versions win, rollback publishes a new version).
-3. Idempotency tests, including concurrent duplicates and Redis failure.
-4. Rate-limit accuracy across multiple gateway instances.
-5. Analytics ingestion and rollup tests (rollups match the raw events, redelivery doesn't double-count).
-6. A CI workflow that runs the regression suite on every push.
+| What is tested | Tests | Examples |
+|---|---|---|
+| Tenant isolation and authorization | 32 | a tenant admin can't read, change or roll back another company's routes, settings or history, even with the same route name; a tenant can't see another company's analytics, even by asking for it (`?org=`); a user token from one company's login provider is refused on another company's routes; forged, expired and wrong-issuer tokens are refused; a suspended company or deleted admin loses access at once |
+| Settings versions and rollback | 10 | every change publishes the complete settings under a new version; 8 parallel changes get 8 different versions; only the last 5 versions are kept; rollback publishes the old settings as a new, higher version; a gateway ignores an older or repeated version |
+| Safe retries (idempotency) | 7 | a repeat returns the first answer and the server runs once; the same key with a different body is refused; two requests with one key at the same moment run once (the second gets `409`); a failed call frees the key; with Redis paused, requests keep flowing and checking resumes afterwards |
+| Limits across three gateways | 3 | three real gateway instances share Redis: a 30/min route lets exactly 30 through, a user's quota exactly 3; with Redis paused, each gateway enforces its third |
+| Analytics records and summaries | 5 | a record delivered three times is stored once; a broken message is skipped; per-minute summaries match the raw records exactly, also after re-running and for late records; percentiles stay within the expected accuracy |
 
-To check that everything builds:
+**Each group was checked against deliberately broken code:** for example, removing the "account still active"
+check, letting tenants choose `?org=`, removing the database lock that orders changes, accepting older settings
+versions, or giving each gateway its own counter. In every case the tests failed, as they should.
+
+**Run them** (needs JDK 21 and Docker; on an 8 GB machine stop the main system first with `docker compose stop`):
 ```bash
-docker compose build
+cd api-management-service && ./mvnw verify      # 24 tests, about 1.5 minutes
+cd smart-gateway-service  && ./mvnw verify      # 20 tests, about 1.5 minutes
+cd analytic-service       && ./mvnw verify      # 13 tests, about 0.5 minutes
 ```
 
-To check that the whole system works end to end (about 3 minutes):
-```powershell
-.\loadtest\run.ps1 -Test baseline
-```
+**CI:** GitHub Actions runs all three suites and builds both UIs on every push to `main` and every pull request
+(`.github/workflows/ci.yml`).
+
+The load test (section 6) complements these tests: it measures behaviour under heavy traffic, but it doesn't
+replace them.
 
 ---
 
@@ -417,11 +427,11 @@ Each of these was a deliberate choice; the full reasoning is kept in the project
 
 | Issue | Details |
 |---|---|
-| No automated tests or CI yet | the next milestone: regression tests for isolation, config ordering and rollback, idempotency, limits and analytics, then CI (section 5) |
 | A gateway that is restarting returns errors for a few seconds | 0.18% of requests in the test |
 | When Kafka goes down, about 2% of traffic records for analytics are lost | a deliberate trade-off: losing some stats is better than slowing users down |
 | Short slowdowns right after a stopped part restarted | most likely the test laptop running out of memory; to be checked on a bigger machine |
 | Response times on the dashboards are estimates | within about 10% in our tests; the error depends on the traffic; request counts are exact |
+| For a few seconds after Redis comes back, a limit can be exceeded slightly | some gateways still count on their own while others count in Redis again; seen once in a test: 31 let through for a limit of 30 |
 | While Redis is down, limits are approximate and repeated orders aren't caught by the gateway | the company's server must deduplicate them; if it doesn't, duplicates can happen (decision 4) |
 | No API keys for machine-to-machine callers | they use tokens from the company's login provider instead |
 | The UIs only work on the machine running Docker | their API addresses (`localhost`) are fixed when they're built |
