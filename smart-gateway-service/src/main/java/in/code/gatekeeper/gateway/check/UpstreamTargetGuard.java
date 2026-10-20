@@ -3,6 +3,7 @@ package in.code.gatekeeper.gateway.check;
 import in.code.gatekeeper.gateway.check.RequestGuard.PublicPath;
 import in.code.gatekeeper.gateway.exception.GatewayException;
 import in.code.gatekeeper.gateway.model.RouteConfig;
+import in.code.gatekeeper.gateway.util.Cidr;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -30,11 +31,14 @@ public class UpstreamTargetGuard {
 
     private final Set<String> blockedHosts;
     private final boolean allowLoopback;
+    private final List<Cidr> blockedCidrs;
 
     public UpstreamTargetGuard(@Value("${gateway.upstream.blocked-hosts}") List<String> blockedHosts,
-                               @Value("${gateway.upstream.allow-loopback}") boolean allowLoopback) {
+                               @Value("${gateway.upstream.allow-loopback}") boolean allowLoopback,
+                               @Value("${gateway.upstream.blocked-cidrs:}") List<String> blockedCidrs) {
         this.blockedHosts = blockedHosts.stream().map(host -> host.toLowerCase(Locale.ROOT)).collect(Collectors.toSet());
         this.allowLoopback = allowLoopback;
+        this.blockedCidrs = Cidr.parseAll(blockedCidrs);
     }
 
     // targetBaseUrl + targetPathPrefix + the request path exactly as received (+ query), checked before it is used
@@ -66,7 +70,8 @@ public class UpstreamTargetGuard {
         }
         for (InetAddress address : addresses) {
             if (address.isLinkLocalAddress() || address.isAnyLocalAddress() || address.isMulticastAddress()
-                    || (address.isLoopbackAddress() && !allowLoopback)) {
+                    || (address.isLoopbackAddress() && !allowLoopback)
+                    || blockedCidrs.stream().anyMatch(cidr -> cidr.contains(address))) {
                 log.warn("Blocked upstream {} resolving to {}", host, address.getHostAddress());
                 throw GatewayException.badGateway(NOT_ALLOWED);
             }
