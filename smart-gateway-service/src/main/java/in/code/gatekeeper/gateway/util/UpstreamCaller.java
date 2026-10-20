@@ -36,12 +36,13 @@ public class UpstreamCaller {
     private static final long MIN_ATTEMPT_MS = 100;
 
     private final UpstreamClient upstreamClient;
+    private final GatewayMetrics metrics;
     private final CircuitBreakerRegistry breakers;
     private final long openSeconds;
     private final int maxAttempts;
     private final long backoffMs;
 
-    public UpstreamCaller(UpstreamClient upstreamClient,
+    public UpstreamCaller(UpstreamClient upstreamClient, GatewayMetrics metrics,
                           @Value("${gateway.circuit-breaker.failure-rate-threshold}") float failureRateThreshold,
                           @Value("${gateway.circuit-breaker.sliding-window-size}") int slidingWindowSize,
                           @Value("${gateway.circuit-breaker.minimum-calls}") int minimumCalls,
@@ -50,6 +51,7 @@ public class UpstreamCaller {
                           @Value("${gateway.retry.max-attempts}") int maxAttempts,
                           @Value("${gateway.retry.backoff-ms}") long backoffMs) {
         this.upstreamClient = upstreamClient;
+        this.metrics = metrics;
         this.breakers = CircuitBreakerRegistry.of(CircuitBreakerConfig.custom()
                 .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
                 .slidingWindowSize(slidingWindowSize)
@@ -58,6 +60,7 @@ public class UpstreamCaller {
                 .waitDurationInOpenState(Duration.ofSeconds(openSeconds))
                 .permittedNumberOfCallsInHalfOpenState(halfOpenCalls)
                 .build());
+        metrics.bind(breakers);
         this.openSeconds = openSeconds;
         this.maxAttempts = maxAttempts;
         this.backoffMs = backoffMs;
@@ -82,6 +85,7 @@ public class UpstreamCaller {
                 breaker.onError(System.nanoTime() - start, TimeUnit.NANOSECONDS, e);
                 if ((e.isNotSent() || safe) && canRetry(attempt, deadline)) {
                     log.info("Retrying {} {} after {} (attempt {})", method, route.routeId(), e.getReason(), attempt);
+                    metrics.retry(route.routeId(), e.getReason());
                     pause(attempt);
                     continue;
                 }
@@ -96,6 +100,7 @@ public class UpstreamCaller {
             breaker.onError(System.nanoTime() - start, TimeUnit.NANOSECONDS, new UpstreamServerError(status));
             if (safe && RETRYABLE_STATUSES.contains(status) && canRetry(attempt, deadline)) {
                 log.info("Retrying {} {} after upstream {} (attempt {})", method, route.routeId(), status, attempt);
+                metrics.retry(route.routeId(), "UPSTREAM_" + status);
                 discard(response);
                 pause(attempt);
                 continue;

@@ -2,6 +2,7 @@ package in.code.gatekeeper.gateway.filter;
 
 import in.code.gatekeeper.gateway.client.TrafficEventPublisher;
 import in.code.gatekeeper.gateway.model.TrafficEvent;
+import in.code.gatekeeper.gateway.util.GatewayMetrics;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -48,10 +49,13 @@ public class TrafficEventFilter extends OncePerRequestFilter {
     private static final Pattern VALID_CORRELATION_ID = Pattern.compile("[A-Za-z0-9._-]{1,64}");
 
     private final TrafficEventPublisher publisher;
+    private final GatewayMetrics metrics;
     private final String instanceId;
 
-    public TrafficEventFilter(TrafficEventPublisher publisher, @Value("${gateway.instance-id}") String instanceId) {
+    public TrafficEventFilter(TrafficEventPublisher publisher, GatewayMetrics metrics,
+                              @Value("${gateway.instance-id}") String instanceId) {
         this.publisher = publisher;
+        this.metrics = metrics;
         this.instanceId = instanceId;
     }
 
@@ -90,13 +94,15 @@ public class TrafficEventFilter extends OncePerRequestFilter {
                                 String correlationId, Instant startedAt, long latencyMs, boolean failed) {
         try {
             String path = request.getRequestURI();
-            publisher.publish(new TrafficEvent(requestId, correlationId, startedAt, instanceId,
+            TrafficEvent event = new TrafficEvent(requestId, correlationId, startedAt, instanceId,
                     (Long) request.getAttribute(ORGANIZATION_ID), (String) request.getAttribute(ORGANIZATION_SLUG),
                     (String) request.getAttribute(ROUTE_ID), request.getMethod(),
                     path.length() > MAX_PATH_LENGTH ? path.substring(0, MAX_PATH_LENGTH) : path,
                     failed ? 500 : response.getStatus(), latencyMs, request.getRemoteAddr(),
                     failed ? "INTERNAL_ERROR" : (String) request.getAttribute(REJECT_REASON),
-                    (String) request.getAttribute(IDEMPOTENCY_OUTCOME), (String) request.getAttribute(IDEMPOTENCY_KEY)));
+                    (String) request.getAttribute(IDEMPOTENCY_OUTCOME), (String) request.getAttribute(IDEMPOTENCY_KEY));
+            metrics.request(event);
+            publisher.publish(event);
         } catch (RuntimeException e) {
             log.warn("Could not publish traffic event {}: {}", requestId, e.toString());
         }

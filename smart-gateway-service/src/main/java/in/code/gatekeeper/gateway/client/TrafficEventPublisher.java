@@ -1,6 +1,7 @@
 package in.code.gatekeeper.gateway.client;
 
 import in.code.gatekeeper.gateway.model.TrafficEvent;
+import in.code.gatekeeper.gateway.util.GatewayMetrics;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -29,9 +30,10 @@ public class TrafficEventPublisher {
     private final JsonMapper jsonMapper;
     private final String topic;
     private final ThreadPoolExecutor sender;
+    private final GatewayMetrics metrics;
     private final AtomicLong dropped = new AtomicLong();
 
-    public TrafficEventPublisher(KafkaTemplate<String, String> kafkaTemplate, JsonMapper jsonMapper,
+    public TrafficEventPublisher(KafkaTemplate<String, String> kafkaTemplate, JsonMapper jsonMapper, GatewayMetrics metrics,
                                  @Value("${gateway.traffic-events.topic}") String topic,
                                  @Value("${gateway.traffic-events.queue-size}") int queueSize) {
         this.kafkaTemplate = kafkaTemplate;
@@ -39,6 +41,8 @@ public class TrafficEventPublisher {
         this.topic = topic;
         this.sender = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(queueSize),
                 Thread.ofVirtual().name("traffic-events-sender").factory(), (task, executor) -> drop("queue full"));
+        this.metrics = metrics;
+        metrics.trafficEventQueue(sender.getQueue());
     }
 
     public void publish(TrafficEvent event) {
@@ -62,6 +66,7 @@ public class TrafficEventPublisher {
     // Logged on the first drop and then every 1000th, so an outage doesn't flood the log
     private void drop(String reason) {
         long count = dropped.incrementAndGet();
+        metrics.droppedTrafficEvent();
         if (count == 1 || count % 1000 == 0) {
             log.warn("Dropped {} traffic events so far ({})", count, reason);
         }
