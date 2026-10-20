@@ -1,5 +1,6 @@
 package in.code.gatekeeper.management.service;
 
+import in.code.gatekeeper.management.config.CorrelationIdFilter;
 import in.code.gatekeeper.management.dto.requestDto.HeaderRuleRequest;
 import in.code.gatekeeper.management.dto.requestDto.RouteRequest;
 import in.code.gatekeeper.management.dto.requestDto.TokenSettingsRequest;
@@ -10,12 +11,13 @@ import in.code.gatekeeper.management.entity.Organization;
 import in.code.gatekeeper.management.entity.OrganizationTokenSettings;
 import in.code.gatekeeper.management.entity.RouteHeaderRule;
 import in.code.gatekeeper.management.enums.HeaderAction;
-import in.code.gatekeeper.management.kafka.OrganizationConfigChangedEvent;
 import in.code.gatekeeper.management.exception.ApiException;
+import in.code.gatekeeper.management.kafka.OrganizationConfigChangedEvent;
 import in.code.gatekeeper.management.repository.ApiRouteRepository;
 import in.code.gatekeeper.management.repository.OrganizationRepository;
 import in.code.gatekeeper.management.repository.OrganizationTokenSettingsRepository;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,7 +48,8 @@ public class TenantService {
     private static final Set<String> GATEWAY_MANAGED_HEADERS = Set.of(
             "host", "connection", "keep-alive", "proxy-authorization", "proxy-authenticate", "te", "trailer",
             "transfer-encoding", "upgrade", "content-length", "x-forwarded-for", "x-forwarded-host",
-            "x-forwarded-proto", "x-forwarded-port", "forwarded", "x-real-ip", "x-user-id", "x-request-id");
+            "x-forwarded-proto", "x-forwarded-port", "forwarded", "x-real-ip", "x-user-id", "x-request-id",
+            "x-correlation-id");
     // Always forwarded by the gateway, so they are not stored per route
     private static final Set<String> ALWAYS_FORWARDED_HEADERS = Set.of("content-type", "accept");
     // {name} segments of a path template
@@ -135,7 +138,8 @@ public class TenantService {
     // The version bump and the change event always go together; the event is handled after commit
     private void bumpVersion(Organization organization) {
         organization.incrementVersion();
-        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId()));
+        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId(),
+                MDC.get(CorrelationIdFilter.MDC_KEY)));
     }
 
     private ApiRoute findRoute(Long organizationId, String routeId) {

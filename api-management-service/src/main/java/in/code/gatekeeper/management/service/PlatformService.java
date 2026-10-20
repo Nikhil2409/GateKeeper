@@ -1,5 +1,6 @@
 package in.code.gatekeeper.management.service;
 
+import in.code.gatekeeper.management.config.CorrelationIdFilter;
 import in.code.gatekeeper.management.dto.requestDto.OrganizationRequest;
 import in.code.gatekeeper.management.dto.requestDto.PasswordResetRequest;
 import in.code.gatekeeper.management.dto.requestDto.TenantAdminRequest;
@@ -10,12 +11,13 @@ import in.code.gatekeeper.management.entity.Organization;
 import in.code.gatekeeper.management.entity.Role;
 import in.code.gatekeeper.management.enums.OrganizationStatus;
 import in.code.gatekeeper.management.enums.RoleName;
-import in.code.gatekeeper.management.kafka.OrganizationConfigChangedEvent;
 import in.code.gatekeeper.management.exception.ApiException;
+import in.code.gatekeeper.management.kafka.OrganizationConfigChangedEvent;
 import in.code.gatekeeper.management.repository.ManagementUserRepository;
 import in.code.gatekeeper.management.repository.OrganizationRepository;
 import in.code.gatekeeper.management.repository.RoleRepository;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -119,7 +121,8 @@ public class PlatformService {
     // The version bump and the change event always go together; the event is handled after commit
     private void bumpVersion(Organization organization) {
         organization.incrementVersion();
-        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId()));
+        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId(),
+                MDC.get(CorrelationIdFilter.MDC_KEY)));
     }
 
     private Organization findOrganization(Long id) {

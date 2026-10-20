@@ -38,7 +38,7 @@ public class OrgConfigChangePublisher {
 
     @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
     public void onOrganizationConfigChanged(OrganizationConfigChangedEvent event) {
-        OrgConfigMessage message = build(event.organizationId());
+        OrgConfigMessage message = build(event.organizationId(), event.correlationId());
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
@@ -52,7 +52,7 @@ public class OrgConfigChangePublisher {
         });
     }
 
-    private OrgConfigMessage build(Long organizationId) {
+    private OrgConfigMessage build(Long organizationId, String correlationId) {
         entityManager.flush();   // make this transaction's pending route/settings changes visible to the queries below
         Organization organization = organizationRepository.findById(organizationId)
                 .orElseThrow(() -> new IllegalStateException("Organization " + organizationId + " not found"));
@@ -62,6 +62,6 @@ public class OrgConfigChangePublisher {
         OrganizationTokenSettings tokenSettings = tokenSettingsRepository.findByOrganizationId(organizationId)
                 .filter(OrganizationTokenSettings::isActive)
                 .orElse(null);
-        return OrgConfigMessage.from(organization, tokenSettings, activeRoutes);
+        return OrgConfigMessage.from(organization, tokenSettings, activeRoutes, correlationId);
     }
 }

@@ -34,10 +34,11 @@ public class OrgConfigSender {
                                 error.getMessage());
                         return;
                     }
-                    log.info("[{}] key={} ({}) version={} status={} routes={} tokenSettings={} trigger={} partition={} offset={}",
-                            topic, message.organizationId(), message.organizationSlug(),
-                            message.configurationVersion(), message.status(), message.routes().size(),
-                            message.tokenSettings() != null, trigger, result.getRecordMetadata().partition(),
+                    log.info("[{}] key={} ({}) version={} status={} routes={} tokenSettings={} trigger={} correlation={} "
+                                    + "partition={} offset={}", topic, message.organizationId(),
+                            message.organizationSlug(), message.configurationVersion(), message.status(),
+                            message.routes().size(), message.tokenSettings() != null, trigger,
+                            message.correlationId(), result.getRecordMetadata().partition(),
                             result.getRecordMetadata().offset());
                 });
     }

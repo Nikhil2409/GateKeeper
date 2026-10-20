@@ -67,7 +67,7 @@ public class OrgConfigStartupPublisher {
         return organizationRepository.findAll(Sort.by("name")).stream()
                 .map(organization -> OrgConfigMessage.from(organization,
                         settingsByOrganization.get(organization.getId()),
-                        routesByOrganization.getOrDefault(organization.getId(), List.of())))
+                        routesByOrganization.getOrDefault(organization.getId(), List.of()), "startup"))
                 .toList();
     }
 }

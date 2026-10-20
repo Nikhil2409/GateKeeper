@@ -15,19 +15,22 @@ import java.util.List;
  * (a late, older message can't bring them back).
  *
  * organizationName is for analytic-service (display only); the gateway ignores it.
+ * correlationId: the admin request that caused the change ("startup" for the startup publish).
  * status: ACTIVE, SUSPENDED or DELETED. tokenSettings: null until the tenant configures them (requests then get 401).
  */
 public record OrgConfigMessage(Long organizationId, String organizationSlug, String organizationName,
                                long configurationVersion,
-                               String status, TokenSettingsResponse tokenSettings, List<RouteConfigMessage> routes) {
+                               String status, TokenSettingsResponse tokenSettings, List<RouteConfigMessage> routes,
+                               String correlationId) {
 
     public static OrgConfigMessage from(Organization organization, OrganizationTokenSettings tokenSettings,
-                                        List<ApiRoute> activeRoutes) {
+                                        List<ApiRoute> activeRoutes, String correlationId) {
         boolean operational = organization.isOperational();
         return new OrgConfigMessage(organization.getId(), organization.getSlug(), organization.getName(),
                 organization.getConfigurationVersion(),
                 organization.isActive() ? organization.getStatus().name() : "DELETED",
                 TokenSettingsResponse.from(tokenSettings),
-                operational ? activeRoutes.stream().map(RouteConfigMessage::from).toList() : List.of());
+                operational ? activeRoutes.stream().map(RouteConfigMessage::from).toList() : List.of(),
+                correlationId);
     }
 }

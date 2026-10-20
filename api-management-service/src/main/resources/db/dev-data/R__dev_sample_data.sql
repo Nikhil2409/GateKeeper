@@ -56,7 +56,8 @@ WHERE s.issuer IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM organization_token_settings t WHERE t.organization_id = o.id);
 
 -- ---------- routes ----------
--- methods / headers: JSON arrays. Headers are lowercase; Content-Type and Accept are always forwarded anyway.
+-- methods / headers: JSON arrays. Headers are lowercase; Content-Type and Accept are always forwarded anyway,
+-- X-Correlation-Id / X-Request-Id are set by the gateway and can't be allowlisted.
 CREATE TEMPORARY TABLE seed_routes
 (
     slug                VARCHAR(100),
@@ -76,17 +77,17 @@ INSERT INTO seed_routes
 VALUES
     -- Acme Corporation: online shop
     ('acme', 'orders', 'List or place orders', '/orders', 'http://orders.acme.internal:8080', '/api/v1',
-     '["GET", "POST"]', '["authorization", "x-correlation-id", "idempotency-key", "accept-language"]', 600, 5000, TRUE),
+     '["GET", "POST"]', '["authorization", "idempotency-key", "accept-language"]', 600, 5000, TRUE),
     ('acme', 'customer', 'Customer profile', '/customers/{customerId}', 'http://customers.acme.internal:8080', '',
      '["GET", "PATCH"]', '["authorization", "if-match"]', 300, 3000, FALSE),
     ('acme', 'order', 'Get, update or cancel an order', '/orders/{orderId}', 'http://orders.acme.internal:8080', '/api/v1',
-     '["GET", "PATCH", "DELETE"]', '["authorization", "x-correlation-id", "if-match"]', 600, 3000, FALSE),
+     '["GET", "PATCH", "DELETE"]', '["authorization", "if-match"]', 600, 3000, FALSE),
     ('acme', 'order-items', 'Order items', '/orders/{orderId}/items', 'http://orders.acme.internal:8080', '/api/v1',
-     '["GET"]', '["authorization", "x-correlation-id"]', 600, 3000, FALSE),
+     '["GET"]', '["authorization"]', 600, 3000, FALSE),
     ('acme', 'create-payment', 'Create payment', '/payments', 'http://payments.acme.internal:8443', '/v2',
-     '["POST"]', '["authorization", "idempotency-key", "x-correlation-id"]', 120, 10000, TRUE),
+     '["POST"]', '["authorization", "idempotency-key"]', 120, 10000, TRUE),
     ('acme', 'payment', 'Payment details', '/payments/{paymentId}', 'http://payments.acme.internal:8443', '/v2',
-     '["GET"]', '["authorization", "x-correlation-id"]', 300, 5000, FALSE),
+     '["GET"]', '["authorization"]', 300, 5000, FALSE),
     ('acme', 'refund', 'Refund a payment', '/payments/{paymentId}/refunds', 'http://payments.acme.internal:8443', '/v2',
      '["POST"]', '["authorization", "idempotency-key"]', 60, 10000, TRUE),
     ('acme', 'inventory', 'Inventory', '/inventory/items', 'http://inventory.acme.internal:8080', '',
@@ -120,9 +121,9 @@ VALUES
     ('initech', 'create-report', 'Generate a report', '/reports/generate', 'http://reports.initech.internal:8080', '',
      '["POST"]', '["authorization", "idempotency-key"]', 10, 30000, TRUE),
     ('initech', 'tps-cover-sheets', 'TPS cover sheets', '/tps/cover-sheets', 'http://tps.initech.internal:8080', '',
-     '["GET", "POST"]', '["authorization", "x-correlation-id"]', 60, 5000, FALSE),
+     '["GET", "POST"]', '["authorization"]', 60, 5000, FALSE),
     ('initech', 'tps-cover-sheet', 'TPS cover sheet', '/tps/cover-sheets/{sheetId}', 'http://tps.initech.internal:8080', '',
-     '["GET", "PUT"]', '["authorization", "x-correlation-id", "if-match"]', 60, 5000, FALSE),
+     '["GET", "PUT"]', '["authorization", "if-match"]', 60, 5000, FALSE),
     ('initech', 'employees', 'Employees', '/employees', 'http://hr.initech.internal:8080', '/v1',
      '["GET"]', '["authorization"]', 120, 3000, FALSE),
     ('initech', 'employee', 'Employee', '/employees/{employeeId}', 'http://hr.initech.internal:8080', '/v1',
@@ -132,9 +133,9 @@ VALUES
 
     -- Umbrella Health: patient portal
     ('umbrella', 'patients', 'Find or register patients', '/patients', 'http://patients.umbrella.internal:8080', '/fhir',
-     '["GET", "POST"]', '["authorization", "x-correlation-id", "accept-language", "idempotency-key"]', 300, 5000, TRUE),
+     '["GET", "POST"]', '["authorization", "accept-language", "idempotency-key"]', 300, 5000, TRUE),
     ('umbrella', 'patient', 'Patient record', '/patients/{patientId}', 'http://patients.umbrella.internal:8080', '/fhir',
-     '["GET", "PUT"]', '["authorization", "x-correlation-id", "if-match"]', 300, 5000, FALSE),
+     '["GET", "PUT"]', '["authorization", "if-match"]', 300, 5000, FALSE),
     ('umbrella', 'lab-results', 'Lab results', '/patients/{patientId}/lab-results', 'http://labs.umbrella.internal:8080', '',
      '["GET"]', '["authorization", "if-none-match"]', 120, 8000, FALSE),
     ('umbrella', 'appointments', 'Book or list appointments', '/appointments', 'http://scheduling.umbrella.internal:8080', '',
@@ -144,17 +145,17 @@ VALUES
     ('umbrella', 'availability', 'Practitioner availability', '/practitioners/{practitionerId}/availability', 'http://scheduling.umbrella.internal:8080', '',
      '["GET"]', '["authorization", "accept-language"]', 600, 3000, FALSE),
     ('umbrella', 'prescriptions', 'Issue a prescription', '/prescriptions', 'http://pharmacy.umbrella.internal:8443', '/api',
-     '["POST"]', '["authorization", "idempotency-key", "x-correlation-id"]', 60, 10000, TRUE),
+     '["POST"]', '["authorization", "idempotency-key"]', 60, 10000, TRUE),
     ('umbrella', 'prescription', 'Prescription', '/prescriptions/{prescriptionId}', 'http://pharmacy.umbrella.internal:8443', '/api',
-     '["GET"]', '["authorization", "x-correlation-id"]', 120, 5000, FALSE),
+     '["GET"]', '["authorization"]', 120, 5000, FALSE),
     ('umbrella', 'status', 'Service status', '/status', 'http://status.umbrella.internal:8080', '',
      '["GET", "HEAD"]', '[]', NULL, 1000, FALSE),
 
     -- Stark Industries: connected devices
     ('stark', 'devices', 'List or register devices', '/devices', 'http://devices.stark.internal:8080', '/api/v3',
-     '["GET", "POST"]', '["authorization", "x-correlation-id"]', 600, 3000, FALSE),
+     '["GET", "POST"]', '["authorization"]', 600, 3000, FALSE),
     ('stark', 'device', 'Device', '/devices/{deviceId}', 'http://devices.stark.internal:8080', '/api/v3',
-     '["GET", "PATCH", "DELETE"]', '["authorization", "x-correlation-id", "if-match"]', 600, 3000, FALSE),
+     '["GET", "PATCH", "DELETE"]', '["authorization", "if-match"]', 600, 3000, FALSE),
     ('stark', 'telemetry', 'Send telemetry', '/devices/{deviceId}/telemetry', 'http://telemetry.stark.internal:9000', '',
      '["POST"]', '["authorization", "content-encoding"]', 6000, 1000, FALSE),
     ('stark', 'commands', 'Send a command', '/devices/{deviceId}/commands', 'http://devices.stark.internal:8080', '/api/v3',
@@ -174,7 +175,7 @@ VALUES
 
     -- Wayne Logistics: shipping (organization suspended: the gateway serves none of these)
     ('wayne', 'shipments', 'Create or list shipments', '/shipments', 'http://shipments.wayne.internal:8080', '',
-     '["GET", "POST"]', '["authorization", "idempotency-key", "x-correlation-id"]', 300, 5000, TRUE),
+     '["GET", "POST"]', '["authorization", "idempotency-key"]', 300, 5000, TRUE),
     ('wayne', 'shipment', 'Shipment', '/shipments/{shipmentId}', 'http://shipments.wayne.internal:8080', '',
      '["GET", "PATCH"]', '["authorization", "if-match"]', 300, 5000, FALSE),
     ('wayne', 'tracking', 'Tracking', '/shipments/{shipmentId}/tracking', 'http://tracking.wayne.internal:8080', '',
