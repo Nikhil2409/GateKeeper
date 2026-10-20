@@ -9,8 +9,8 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * Whether Redis answers, for /_gateway/health. Without Redis the gateway still serves (limits fail open) but
- * idempotent routes answer 503, so it is reported next to readiness instead of changing it.
+ * Whether Redis answers, for /_gateway/health. Without Redis the gateway still serves (limits counted per
+ * instance, idempotency bypassed, decision #72), so it is reported next to readiness instead of changing it.
  * Pinged at most once per interval: the health endpoint is public and polled by load balancers.
  */
 @Component

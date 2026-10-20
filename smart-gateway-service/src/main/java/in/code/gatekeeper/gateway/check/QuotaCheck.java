@@ -10,7 +10,8 @@ import org.springframework.stereotype.Component;
 /**
  * Per-user quota on a route: perUserRequestsPerMinute (a tenth of the route limit), counted per user in the same
  * 1-minute window as the route's rate limit, so one user can't use up the whole route.
- * Fails open: if Redis is down the request passes, because blocking all traffic is worse than a short unlimited spell.
+ * While Redis is down each instance enforces its share of the quota on its own (RedisWindowCounter): approximate,
+ * but a client can't take a backend down just because Redis is.
  */
 @Component
 @RequiredArgsConstructor
@@ -24,11 +25,11 @@ public class QuotaCheck {
         if (limit == null || userId == null) {
             return;
         }
-        counter.hit("quota:" + organization.organizationId() + ":" + route.routeId() + ":" + userId)
-                .filter(window -> window.count() > limit)
-                .ifPresent(window -> {
-                    throw GatewayException.tooManyRequests("QUOTA_EXCEEDED", "Request quota for this user exceeded",
-                            window.secondsLeft());
-                });
+        RedisWindowCounter.Window window = counter.hit(
+                "quota:" + organization.organizationId() + ":" + route.routeId() + ":" + userId);
+        if (counter.exceeds(window, limit)) {
+            throw GatewayException.tooManyRequests("QUOTA_EXCEEDED", "Request quota for this user exceeded",
+                    window.secondsLeft());
+        }
     }
 }

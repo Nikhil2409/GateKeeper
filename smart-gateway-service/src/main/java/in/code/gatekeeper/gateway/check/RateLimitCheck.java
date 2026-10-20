@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 /**
  * Per-route rate limit: requestsPerMinute across ALL callers and all gateway instances (the counter lives in Redis),
  * protecting the tenant's upstream service. No limit configured = unlimited.
- * Fails open like the quota: if Redis is down the request passes.
+ * While Redis is down each instance enforces its share of the limit on its own (RedisWindowCounter).
  */
 @Component
 @RequiredArgsConstructor
@@ -23,11 +23,10 @@ public class RateLimitCheck {
         if (limit == null) {
             return;
         }
-        counter.hit("rate:" + organization.organizationId() + ":" + route.routeId())
-                .filter(window -> window.count() > limit)
-                .ifPresent(window -> {
-                    throw GatewayException.tooManyRequests("RATE_LIMITED", "Rate limit for this route exceeded",
-                            window.secondsLeft());
-                });
+        RedisWindowCounter.Window window = counter.hit("rate:" + organization.organizationId() + ":" + route.routeId());
+        if (counter.exceeds(window, limit)) {
+            throw GatewayException.tooManyRequests("RATE_LIMITED", "Rate limit for this route exceeded",
+                    window.secondsLeft());
+        }
     }
 }

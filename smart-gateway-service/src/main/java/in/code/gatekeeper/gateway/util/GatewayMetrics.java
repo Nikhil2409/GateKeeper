@@ -45,6 +45,11 @@ public class GatewayMetrics {
                 .register(registry).increment();
     }
 
+    // a check that ran without Redis (limits counted locally, idempotency bypassed)
+    public void redisFallback(String check) {
+        Counter.builder("gateway.redis.fallback").tag("check", check).register(registry).increment();
+    }
+
     public void droppedTrafficEvent() {
         Counter.builder("gateway.traffic.events.dropped").register(registry).increment();
     }

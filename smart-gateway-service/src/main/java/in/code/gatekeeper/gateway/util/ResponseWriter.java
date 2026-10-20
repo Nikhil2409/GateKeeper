@@ -34,8 +34,12 @@ public class ResponseWriter {
         response.setStatus(upstream.statusCode());
         addHeaders(response, headers);
 
+        if (ticket != null && ticket.bypassed()) {
+            response.setHeader(IdempotencyCheck.STATUS_HEADER, "unchecked");
+        }
+
         try (InputStream in = upstream.body(); OutputStream out = response.getOutputStream()) {
-            if (ticket == null) {
+            if (ticket == null || ticket.bypassed()) {
                 in.transferTo(out);
                 return;
             }

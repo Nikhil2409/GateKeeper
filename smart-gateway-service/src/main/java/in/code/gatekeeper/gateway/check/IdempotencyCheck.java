@@ -1,14 +1,16 @@
 package in.code.gatekeeper.gateway.check;
 
+import in.code.gatekeeper.gateway.client.RedisGuard;
+import in.code.gatekeeper.gateway.client.RedisGuard.RedisUnavailableException;
 import in.code.gatekeeper.gateway.exception.GatewayException;
 import in.code.gatekeeper.gateway.filter.TrafficEventFilter;
 import in.code.gatekeeper.gateway.model.RouteConfig;
 import in.code.gatekeeper.gateway.registry.OrgRoutes;
+import in.code.gatekeeper.gateway.util.GatewayMetrics;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.json.JsonMapper;
@@ -32,7 +34,9 @@ import java.util.regex.Pattern;
  *   3. a repeat      : COMPLETED + same fingerprint -> replay; IN_PROGRESS -> 409; other fingerprint -> 422
  *
  * Only unsafe methods are checked (GET/HEAD/OPTIONS are idempotent by definition) and the key is then required.
- * Fails CLOSED: if Redis is down the request gets 503, because forwarding could run a payment twice.
+ * While Redis is down the check is BYPASSED (decision #72): the request goes on with its Idempotency-Key and the
+ * backend's own deduplication (the contract of an idempotent route, #62) is the protection; no replay, no 409.
+ * The answer carries Idempotency-Status: unchecked and the traffic event the outcome BYPASSED.
  */
 @Slf4j
 @Component
@@ -40,6 +44,7 @@ public class IdempotencyCheck {
 
     public static final String HEADER = "Idempotency-Key";
     public static final String REPLAYED_HEADER = "Idempotency-Replayed";
+    public static final String STATUS_HEADER = "Idempotency-Status";
 
     private static final Set<String> SAFE_METHODS = Set.of("GET", "HEAD", "OPTIONS");
     private static final Pattern VALID_KEY = Pattern.compile("[\\x21-\\x7E]{1,255}");
@@ -47,15 +52,20 @@ public class IdempotencyCheck {
     private static final String COMPLETED = "COMPLETED";
 
     private final StringRedisTemplate redis;
+    private final RedisGuard guard;
+    private final GatewayMetrics metrics;
     private final JsonMapper jsonMapper;
     private final Duration completedTtl;
     @Getter
     private final int maxStoredResponseBytes;
 
-    public IdempotencyCheck(StringRedisTemplate redis, JsonMapper jsonMapper,
+    public IdempotencyCheck(StringRedisTemplate redis, RedisGuard guard, GatewayMetrics metrics,
+                            JsonMapper jsonMapper,
                             @Value("${gateway.idempotency.ttl}") Duration completedTtl,
                             @Value("${gateway.idempotency.max-response-bytes}") int maxStoredResponseBytes) {
         this.redis = redis;
+        this.guard = guard;
+        this.metrics = metrics;
         this.jsonMapper = jsonMapper;
         this.completedTtl = completedTtl;
         this.maxStoredResponseBytes = maxStoredResponseBytes;
@@ -65,8 +75,15 @@ public class IdempotencyCheck {
                                  byte[] body) {
     }
 
-    // replay is set when the response is already known; otherwise this request owns the key and must complete/release
+    // replay is set when the response is already known; otherwise this request owns the key and must complete/release.
+    // No redisKey = bypassed (Redis down): nothing to complete or release
     public record Ticket(String redisKey, String fingerprint, StoredResponse replay) {
+
+        static final Ticket BYPASSED = new Ticket(null, null, null);
+
+        public boolean bypassed() {
+            return redisKey == null;
+        }
     }
 
     // null when the check does not apply to this request
@@ -89,11 +106,12 @@ public class IdempotencyCheck {
         try {
             String inProgress = jsonMapper.writeValueAsString(
                     new StoredResponse(IN_PROGRESS, fingerprint, 0, Map.of(), null));
-            if (Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(redisKey, inProgress, lockTtl))) {
+            Boolean acquired = guard.call(() -> redis.opsForValue().setIfAbsent(redisKey, inProgress, lockTtl));
+            if (Boolean.TRUE.equals(acquired)) {
                 request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "EXECUTED");
                 return new Ticket(redisKey, fingerprint, null);
             }
-            String existing = redis.opsForValue().get(redisKey);
+            String existing = guard.call(() -> redis.opsForValue().get(redisKey));
             if (existing == null) {
                 request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "IN_PROGRESS_CONFLICT");
                 // expired between the two calls: let the client retry rather than racing for it here
@@ -111,18 +129,22 @@ public class IdempotencyCheck {
             }
             request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "REPLAYED");
             return new Ticket(redisKey, fingerprint, stored);
-        } catch (DataAccessException e) {
-            log.warn("Redis unavailable for idempotency key {}: {}", redisKey, e.getMessage());
-            throw GatewayException.serviceUnavailable("Idempotency store is unavailable, retry later");
+        } catch (RedisUnavailableException e) {
+            request.setAttribute(TrafficEventFilter.IDEMPOTENCY_OUTCOME, "BYPASSED");
+            metrics.redisFallback("idempotency");
+            return Ticket.BYPASSED;
         }
     }
 
     public void complete(Ticket ticket, int status, Map<String, List<String>> headers, byte[] body) {
+        if (ticket.bypassed()) {
+            return;
+        }
         try {
             String completed = jsonMapper.writeValueAsString(
                     new StoredResponse(COMPLETED, ticket.fingerprint(), status, headers, body));
-            redis.opsForValue().set(ticket.redisKey(), completed, completedTtl);
-        } catch (DataAccessException e) {
+            guard.run(() -> redis.opsForValue().set(ticket.redisKey(), completed, completedTtl));
+        } catch (RedisUnavailableException e) {
             // the caller still gets its response; a retry within the lock TTL gets 409, after it runs again
             log.warn("Could not store idempotent response for {}: {}", ticket.redisKey(), e.getMessage());
         }
@@ -135,18 +157,22 @@ public class IdempotencyCheck {
     }
 
     private long secondsLeft(String redisKey) {
-        Long seconds = redis.getExpire(redisKey);
-        return seconds == null || seconds < 1 ? 1 : seconds;
+        try {
+            Long seconds = guard.call(() -> redis.getExpire(redisKey));
+            return seconds == null || seconds < 1 ? 1 : seconds;
+        } catch (RedisUnavailableException e) {
+            return 1;
+        }
     }
 
     // Frees the key so the client can retry, e.g. when the upstream was never reached
     public void release(Ticket ticket) {
-        if (ticket == null || ticket.replay() != null) {
+        if (ticket == null || ticket.replay() != null || ticket.bypassed()) {
             return;
         }
         try {
-            redis.delete(ticket.redisKey());
-        } catch (DataAccessException e) {
+            guard.call(() -> redis.delete(ticket.redisKey()));
+        } catch (RedisUnavailableException e) {
             log.warn("Could not release idempotency key {}: {}", ticket.redisKey(), e.getMessage());
         }
     }
