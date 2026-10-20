@@ -1,0 +1,18 @@
+# Scrapes the services' internal management ports (never published to the host)
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [smart-gateway-1:8090, smart-gateway-2:8090, smart-gateway-3:8090]
+  - job_name: api-management
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [api-management-service:8091]
+  - job_name: analytics
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [analytic-service:8092]

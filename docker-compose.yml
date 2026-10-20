@@ -1,0 +1,335 @@
+# The whole Gatekeeper platform, reproducible on any machine with Docker (free images only).
+#   docker compose up -d --build   build and start everything (first build takes a few minutes)
+#   docker compose ps              status
+#   docker compose down            stop (data stays in the named volumes; add -v to wipe it)
+#
+#   http://localhost:5173  management UI      http://localhost:8080  gateway (nginx -> 3 instances)
+#   http://localhost:5175  analytics UI       http://localhost:8081  api-management   :8082 analytics
+#   http://localhost:3000  Grafana (opened from analytics UI > System metrics)   http://localhost:9090  Prometheus
+#   Demo login: platform-admin / admin-pass-123 (sample tenants: <slug>-admin / demo-pass-123)
+#
+# Local development without containers for the services: start.ps1 runs only "redis kafka" from this file, as the
+# separate project "gatekeeper-dev" (own volumes), so local runs and this stack never share Kafka or Redis data.
+# MySQL and MongoDB publish no ports, so they never clash with locally installed ones.
+#
+# Every container has a memory cap (the JVMs take 75% of theirs as heap), about 2.4 GB together (caps, not usage), so the stack
+# fits Docker Desktop's default VM on an 8 GB machine.
+#
+# Networks: "platform" holds everything of ours; "tenants" stands for the customers' backends (WireMock here).
+# The gateways sit on both, and tenant routes may never target the platform subnet (blocked CIDR), so a route
+# can't reach Redis or MySQL by IP.
+
+name: gatekeeper
+
+x-gateway: &gateway
+  # built once per instance name; the second and third builds come from the cache
+  build: ./smart-gateway-service
+  environment: &gateway-env
+    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    REDIS_HOST: redis
+    UPSTREAM_BLOCKED_CIDRS: 172.28.0.0/24
+    # trust X-Forwarded-For from nginx (a private address), so analytics sees the real client IP
+    SERVER_FORWARD_HEADERS_STRATEGY: native
+  networks: [platform, tenants]
+  mem_limit: 256m
+  depends_on:
+    kafka: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    api-management-service: { condition: service_started }
+  restart: unless-stopped
+
+services:
+  # ---------- infrastructure ----------
+  mysql:
+    image: mysql:8.0
+    container_name: gatekeeper-mysql
+    # small buffer pool, no performance schema: ~150 MB instead of ~400 MB
+    command: ["--performance-schema=OFF", "--innodb-buffer-pool-size=64M"]
+    mem_limit: 320m
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-gatekeeper-demo}
+      MYSQL_DATABASE: gatekeeper_mgmt
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:8.0
+    container_name: gatekeeper-mongodb
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    mem_limit: 320m
+    volumes:
+      - mongodb-data:/data/db
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    # Append-only file: idempotency records survive a restart. No password: never published beyond this machine.
+    command: ["redis-server", "--appendonly", "yes"]
+    mem_limit: 64m
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:4.0.0
+    mem_limit: 512m
+    ports:
+      - "127.0.0.1:9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # containers use kafka:29092, your machine (start.ps1, IDE) uses localhost:9092
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      # a single broker: internal topics can't be replicated
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms128m -Xmx256m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------- the three services ----------
+  api-management-service:
+    build: ./api-management-service
+    image: gatekeeper/api-management-service
+    container_name: gatekeeper-api-management
+    mem_limit: 320m
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/gatekeeper_mgmt
+      DB_PASSWORD: ${DB_PASSWORD:-gatekeeper-demo}
+      PLATFORM_ADMIN_USERNAME: ${PLATFORM_ADMIN_USERNAME:-platform-admin}
+      # BCrypt of "admin-pass-123" ($ doubled for compose); set PLATFORM_ADMIN_PASSWORD_HASH to use your own
+      PLATFORM_ADMIN_PASSWORD_HASH: ${PLATFORM_ADMIN_PASSWORD_HASH:-$$2a$$10$$QEpTD0pPcs/oy/e1OkYAQOD7o5Fzhw6ekg3ZsahWQUzIgrdjVZfXy}
+      JWT_PUBLIC_KEY_LOCATION: file:/keys/public.pem
+      JWT_PRIVATE_KEY_LOCATION: file:/keys/private.pem
+      JWT_PUBLIC_JWKS_FILE: /keys/jwks.json
+      GATEKEEPER_SECURITY_JWT_GENERATE_IF_MISSING: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      ROUTES_BLOCKED_CIDRS: 172.28.0.0/24
+    volumes:
+      - jwt-keys:/keys
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8091/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      mysql: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    restart: unless-stopped
+
+  smart-gateway-1:
+    <<: *gateway
+    container_name: gatekeeper-gateway-1
+    environment:
+      <<: *gateway-env
+      GATEWAY_INSTANCE_ID: smart-gateway-1
+
+  smart-gateway-2:
+    <<: *gateway
+    container_name: gatekeeper-gateway-2
+    environment:
+      <<: *gateway-env
+      GATEWAY_INSTANCE_ID: smart-gateway-2
+
+  smart-gateway-3:
+    <<: *gateway
+    container_name: gatekeeper-gateway-3
+    environment:
+      <<: *gateway-env
+      GATEWAY_INSTANCE_ID: smart-gateway-3
+
+  analytic-service:
+    build: ./analytic-service
+    image: gatekeeper/analytic-service
+    container_name: gatekeeper-analytics
+    mem_limit: 256m
+    ports:
+      - "8082:8082"
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/gatekeeper_analytics
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      MANAGEMENT_JWKS_URI: http://api-management-service:8081/.well-known/jwks.json
+      PROMETHEUS_URL: http://prometheus:9090
+    networks: [platform]
+    depends_on:
+      mongodb: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: gatekeeper-nginx
+    mem_limit: 32m
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./docker/nginx/gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [platform]
+    depends_on: [smart-gateway-1, smart-gateway-2, smart-gateway-3]
+    restart: unless-stopped
+
+  # ---------- a tenant's backend, for demos and the load test ----------
+  wiremock:
+    image: wiremock/wiremock:3.9.2
+    container_name: gatekeeper-wiremock
+    mem_limit: 160m
+    environment:
+      JAVA_OPTS: -Xmx64m -XX:+UseSerialGC
+    command: ["--no-request-journal", "--disable-banner"]
+    volumes:
+      - ./docker/wiremock/mappings:/home/wiremock/mappings:ro
+    networks: [tenants]
+    restart: unless-stopped
+
+  # ---------- observability ----------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: gatekeeper-prometheus
+    mem_limit: 128m
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=3d"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks: [platform]
+    restart: unless-stopped
+
+  # No users of its own: analytics-ui opens it with the platform admin's api-management JWT (?auth_token=...),
+  # verified with api-management's public key (Grafana accepts JWKS only over https). Any other role is refused
+  # (strict role mapping).
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: gatekeeper-grafana
+    mem_limit: 160m
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-gatekeeper-demo}
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_JWT_ENABLED: "true"
+      GF_AUTH_JWT_HEADER_NAME: X-JWT-Assertion
+      GF_AUTH_JWT_URL_LOGIN: "true"
+      GF_AUTH_JWT_JWK_SET_FILE: /keys/jwks.json
+      GF_AUTH_JWT_EXPECT_CLAIMS: '{"iss": "gatekeeper-api-management"}'
+      GF_AUTH_JWT_USERNAME_CLAIM: sub
+      GF_AUTH_JWT_EMAIL_CLAIM: sub
+      GF_AUTH_JWT_AUTO_SIGN_UP: "true"
+      GF_AUTH_JWT_ROLE_ATTRIBUTE_PATH: "role == 'PLATFORM_ADMIN' && 'Viewer'"
+      GF_AUTH_JWT_ROLE_ATTRIBUTE_STRICT: "true"
+      GF_USERS_DEFAULT_THEME: light
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/gatekeeper.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+      # api-management's public JWKS; private.pem in the same volume is owner-only, unreadable for Grafana
+      - jwt-keys:/keys:ro
+    networks: [platform]
+    depends_on:
+      prometheus: { condition: service_started }
+      # it writes the key pair on its first start
+      api-management-service: { condition: service_healthy }
+    restart: unless-stopped
+
+  # ---------- the two UIs (sources from GATEKEEPER_UI_DIR, default ../GateKeeper-UI) ----------
+  management-ui:
+    build:
+      context: ./docker/ui
+      additional_contexts:
+        app: ${GATEKEEPER_UI_DIR:-../GateKeeper-UI}/api-management-ui
+      args:
+        VITE_API_BASE_URL: http://localhost:8081
+        VITE_GATEWAY_URL: http://localhost:8080
+    image: gatekeeper/management-ui
+    container_name: gatekeeper-management-ui
+    mem_limit: 32m
+    ports:
+      - "5173:80"
+    networks: [platform]
+    restart: unless-stopped
+
+  analytics-ui:
+    build:
+      context: ./docker/ui
+      additional_contexts:
+        app: ${GATEKEEPER_UI_DIR:-../GateKeeper-UI}/analytics-ui
+      args:
+        VITE_AUTH_API_URL: http://localhost:8081
+        VITE_SERVICE_API_URL: http://localhost:8082
+        VITE_USE_MOCK_DATA: "false"
+        VITE_GRAFANA_URL: http://localhost:3000
+    image: gatekeeper/analytics-ui
+    container_name: gatekeeper-analytics-ui
+    mem_limit: 32m
+    ports:
+      - "5175:80"
+    networks: [platform]
+    restart: unless-stopped
+
+networks:
+  platform:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+  tenants:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+
+volumes:
+  mysql-data:
+  mongodb-data:
+  redis-data:
+  kafka-data:
+  jwt-keys:
+  prometheus-data:
+  grafana-data:

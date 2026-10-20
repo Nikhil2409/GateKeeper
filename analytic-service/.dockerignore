@@ -1,0 +1,6 @@
+target/
+.idea/
+*.iml
+HELP.md
+# local secrets never go into an image (api-management generates its keys in Docker)
+src/main/resources/certs/

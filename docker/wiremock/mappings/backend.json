@@ -1,0 +1,8 @@
+{
+  "mappings": [
+    {"request": {"method": "GET", "urlPath": "/fast"}, "response": {"status": 200, "jsonBody": {"ok": true}, "headers": {"Content-Type": "application/json"}}},
+    {"request": {"method": "GET", "urlPath": "/slow"}, "response": {"status": 200, "fixedDelayMilliseconds": 200, "jsonBody": {"ok": true, "slow": true}, "headers": {"Content-Type": "application/json"}}},
+    {"request": {"method": "GET", "urlPath": "/fail"}, "response": {"status": 500, "jsonBody": {"error": "always fails"}, "headers": {"Content-Type": "application/json"}}},
+    {"request": {"method": "POST", "urlPath": "/orders"}, "response": {"status": 201, "jsonBody": {"created": true}, "headers": {"Content-Type": "application/json"}}}
+  ]
+}
