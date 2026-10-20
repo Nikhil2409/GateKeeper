@@ -71,6 +71,8 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/health", "/error").permitAll()
+                        // served only on the internal management port (management.server.port)
+                        .requestMatchers("/actuator/health", "/actuator/prometheus").permitAll()
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
                         // public signing key, so other services (analytics) can verify our tokens themselves
                         .requestMatchers(HttpMethod.GET, "/.well-known/jwks.json").permitAll()
