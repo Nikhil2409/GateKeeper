@@ -46,6 +46,8 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // served only on the internal management port (management.server.port)
+                        .requestMatchers("/actuator/health", "/actuator/prometheus").permitAll()
                         .requestMatchers(HttpMethod.GET, "/analytics/organizations").hasRole("PLATFORM_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/analytics/**").hasAnyRole("PLATFORM_ADMIN", "TENANT_ADMIN")
                         .anyRequest().denyAll())

@@ -20,4 +20,8 @@ public class ApiException extends RuntimeException {
     public static ApiException forbidden(String message) {
         return new ApiException(HttpStatus.FORBIDDEN, message);
     }
+
+    public static ApiException unavailable(String message) {
+        return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, message);
+    }
 }

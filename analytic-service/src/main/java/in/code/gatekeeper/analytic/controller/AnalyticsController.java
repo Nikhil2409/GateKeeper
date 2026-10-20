@@ -1,6 +1,8 @@
 package in.code.gatekeeper.analytic.controller;
 
 import in.code.gatekeeper.analytic.dto.responseDto.IdempotencyStatsResponse;
+import in.code.gatekeeper.analytic.dto.responseDto.LivePointResponse;
+import in.code.gatekeeper.analytic.dto.responseDto.LiveRouteResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.OrganizationStatsResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.RateLimitUsageResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.RequestLogPageResponse;
@@ -9,6 +11,7 @@ import in.code.gatekeeper.analytic.dto.responseDto.SummaryResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.TimeBucketResponse;
 import in.code.gatekeeper.analytic.enums.TimeRange;
 import in.code.gatekeeper.analytic.security.AnalyticsUser;
+import in.code.gatekeeper.analytic.service.LiveMetricsService;
 import in.code.gatekeeper.analytic.service.PolicyStatsService;
 import in.code.gatekeeper.analytic.service.RequestLogService;
 import in.code.gatekeeper.analytic.service.TrafficStatsService;
@@ -36,6 +39,7 @@ public class AnalyticsController {
     private final TrafficStatsService trafficStatsService;
     private final RequestLogService requestLogService;
     private final PolicyStatsService policyStatsService;
+    private final LiveMetricsService liveMetricsService;
 
     @GetMapping("/summary")
     public ResponseEntity<SummaryResponse> summary(@AuthenticationPrincipal Jwt jwt,
@@ -57,6 +61,19 @@ public class AnalyticsController {
                                                            @RequestParam(required = false) String range,
                                                            @RequestParam(required = false) Long org) {
         return ResponseEntity.ok(trafficStatsService.routes(TimeRange.from(range), AnalyticsUser.from(jwt).scope(org)));
+    }
+
+    // Live: the last minute per route and the last 15 minutes, from Prometheus
+    @GetMapping("/live/routes")
+    public ResponseEntity<List<LiveRouteResponse>> liveRoutes(@AuthenticationPrincipal Jwt jwt,
+                                                              @RequestParam(required = false) Long org) {
+        return ResponseEntity.ok(liveMetricsService.routes(AnalyticsUser.from(jwt).scope(org)));
+    }
+
+    @GetMapping("/live/timeseries")
+    public ResponseEntity<List<LivePointResponse>> liveTimeseries(@AuthenticationPrincipal Jwt jwt,
+                                                                  @RequestParam(required = false) Long org) {
+        return ResponseEntity.ok(liveMetricsService.timeseries(AnalyticsUser.from(jwt).scope(org)));
     }
 
     // Platform admins only (SecurityConfig)
