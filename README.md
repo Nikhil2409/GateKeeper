@@ -36,45 +36,52 @@ test found and fixed three real bugs (see [Known issues](#known-issues-and-limit
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph clients[Clients]
-        users[Tenants' users / apps]
-        mui[Management UI :5173]
-        aui[Analytics UI :5175]
+flowchart TB
+    users(["Tenants' users and apps"])
+    admins(["Platform and tenant admins<br/>Management UI · Analytics UI"])
+
+    subgraph data [Data plane]
+        nginx["nginx :8080<br/>load balancer"]
+        gw["smart-gateway-service × 3<br/>route match · tenant JWT · rate limit & quota<br/>idempotency · circuit breaker · retries"]
+        redis[("Redis<br/>counters · idempotency keys")]
     end
 
-    subgraph platform[Docker network: platform 172.28.0.0/24]
-        nginx[nginx :8080<br/>round robin]
-        subgraph gw[smart-gateway-service x3]
-            g1[gateway-1]
-            g2[gateway-2]
-            g3[gateway-3]
-        end
-        mgmt[api-management-service :8081]
-        ana[analytic-service :8082]
-        mysql[(MySQL)]
-        mongo[(MongoDB)]
-        redis[(Redis<br/>limits, idempotency)]
-        kafka{{Kafka<br/>gateway.org-config<br/>gateway.traffic-events}}
-        prom[Prometheus]
-        graf[Grafana]
+    subgraph control [Control plane]
+        mgmt["api-management-service :8081<br/>organizations · routes · token trust<br/>versions · rollback"]
+        mysql[("MySQL")]
     end
 
-    subgraph tenants[Docker network: tenants 172.29.0.0/24]
-        backend[Tenant backends<br/>WireMock here]
+    kafka{{"Kafka<br/>gateway.org-config · gateway.traffic-events"}}
+
+    subgraph insight [Analytics and observability]
+        ana["analytic-service :8082<br/>per-minute rollups"]
+        mongo[("MongoDB")]
+        prom["Prometheus"]
+        graf["Grafana<br/>platform admins"]
     end
 
-    users -->|"/{org}/{path} + tenant JWT"| nginx --> gw
-    gw -->|forward| backend
+    backends(["Tenants' own backend services"])
+
+    users -->|"/{org}/{path} + JWT"| nginx --> gw
+    gw -->|forward| backends
     gw <--> redis
-    mui --> mgmt --> mysql
-    mgmt -->|org config, versioned| kafka -->|config| gw
-    gw -->|one event per request| kafka -->|events| ana --> mongo
-    aui --> mgmt
-    aui --> ana
-    aui -->|iframe, platform admins| graf --> prom
-    prom -. scrapes .-> gw & mgmt & ana
+    admins --> mgmt
+    admins --> ana
+    admins --> graf
+    mgmt --> mysql
+    mgmt -->|"full config per organization, versioned"| kafka
+    kafka -->|config| gw
+    gw -->|"one event per request"| kafka
+    kafka -->|events| ana
+    ana --> mongo
+    graf --> prom
+    prom -.->|scrape| gw
+    prom -.->|scrape| mgmt
+    prom -.->|scrape| ana
 ```
+
+The gateways sit on two Docker networks: the platform network (everything above) and a separate network for tenant
+backends. Routes may never target the platform network, so a tenant can't point a route at Redis or MySQL.
 
 **How a configuration change travels.** A tenant admin saves a route → api-management bumps the organization's
 version and, inside the same transaction, builds the organization's *complete* configuration → after commit it is
