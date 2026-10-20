@@ -28,6 +28,8 @@ x-gateway: &gateway
     KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     REDIS_HOST: redis
     UPSTREAM_BLOCKED_CIDRS: 172.28.0.0/24
+    # instances behind nginx: while Redis is down each enforces this share of a limit
+    GATEWAY_CLUSTER_SIZE: 3
     # trust X-Forwarded-For from nginx (a private address), so analytics sees the real client IP
     SERVER_FORWARD_HEADERS_STRATEGY: native
   networks: [platform, tenants]
@@ -63,14 +65,16 @@ services:
     image: mongo:8.0
     container_name: gatekeeper-mongodb
     command: ["--wiredTigerCacheSizeGB", "0.25"]
-    mem_limit: 320m
+    # cache + connections + aggregation memory; 320m thrashed once traffic events reached the hundreds of thousands
+    mem_limit: 512m
     volumes:
       - mongodb-data:/data/db
     networks: [platform]
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
-      timeout: 5s
+      # mongosh itself needs a few seconds to start on a busy machine
+      timeout: 10s
       retries: 30
     restart: unless-stopped
 
@@ -229,7 +233,8 @@ services:
     image: prom/prometheus:v2.55.1
     container_name: gatekeeper-prometheus
     mem_limit: 128m
-    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=3d"]
+    # 30 days: load-test runs stay viewable in Grafana
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
     ports:
       - "127.0.0.1:9090:9090"
     volumes:
