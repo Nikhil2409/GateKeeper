@@ -1,429 +1,462 @@
 # Gatekeeper
 
-A multi-tenant API gateway platform. Organizations (tenants) register their backend APIs; the gateway checks,
-limits and forwards their users' traffic, survives its dependencies going down, and records every request for
-analytics. Three Spring Boot services, Kafka between them, the whole system in one `docker compose up`.
+Gatekeeper is an **API gateway for many companies at once**. A company (we call it a *tenant* or *organization*)
+tells Gatekeeper which of its APIs should be reachable. Its users then call those APIs through Gatekeeper, which:
 
-- **Control plane** (`api-management-service`): organizations, tenant admins, routes, token trust, versioned
-  configuration with history and rollback.
-- **Data plane** (`smart-gateway-service`, 3 instances behind nginx): deny-by-default routing, tenant JWT
-  verification, rate limits and per-user quotas, idempotency, circuit breakers, safe retries, hot configuration
-  reload. Never calls the database or the control plane.
-- **Analytics** (`analytic-service`): traffic stats for platform and tenant admins, live per-route performance.
-- **Observability**: Prometheus + Grafana (platform admins), correlation id across every hop.
+- lets through only the requests the company configured, and only from users authenticated by the company's
+  configured identity provider (login service),
+- stops any single user or API from being flooded,
+- keeps working when parts of the platform fail,
+- and records requests asynchronously for analytics, so companies can see how their APIs are doing (with a small
+  risk of losing some records while Kafka is down).
 
-Load-tested with k6, including runs that stop a gateway instance, Kafka, Redis and api-management under load; the
-test found and fixed three real bugs (see [Known issues](#known-issues-and-limitations)).
+It is built from three small Java services that talk to each other through Kafka (a message queue), and the whole
+system starts with one command.
 
-> The two React UIs (`ui/`) are thin, AI-generated clients for the APIs. The backend services are the project.
+> The two web UIs in `ui/` are simple, AI-generated front ends for the APIs. The backend services are the project.
 
 ---
 
 ## Contents
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Setup and startup](#setup-and-startup)
-- [Sample requests](#sample-requests)
-- [Building and tests](#building-and-tests)
-- [Load testing](#load-testing)
-- [Critical design choices](#critical-design-choices)
-- [Known issues and limitations](#known-issues-and-limitations)
-- [Configuration reference](#configuration-reference)
-- [Repository layout](#repository-layout)
+1. [How it works](#1-how-it-works)
+2. [What you need](#2-what-you-need)
+3. [Start it](#3-start-it)
+4. [Try it: a tenant from scratch](#4-try-it-a-tenant-from-scratch)
+5. [Tests](#5-tests)
+6. [Load test](#6-load-test)
+7. [Important design decisions](#7-important-design-decisions)
+8. [Known issues](#8-known-issues)
+9. [Settings](#9-settings)
+10. [Folder layout](#10-folder-layout)
 
 ---
 
-## Architecture
+## 1. How it works
 
 ```mermaid
 flowchart TB
     users(["Tenants' users and apps"])
-    admins(["Platform and tenant admins<br/>Management UI · Analytics UI"])
+    admins(["Admins<br/>Management UI · Analytics UI"])
 
-    subgraph data [Data plane]
-        nginx["nginx :8080<br/>load balancer"]
-        gw["smart-gateway-service × 3<br/>route match · tenant JWT · rate limit & quota<br/>idempotency · circuit breaker · retries"]
-        redis[("Redis<br/>counters · idempotency keys")]
+    subgraph data [Handles the traffic]
+        nginx["nginx<br/>spreads requests"]
+        gw["Gateway × 3<br/>checks and forwards each request"]
+        redis[("Redis<br/>request counters")]
     end
 
-    subgraph control [Control plane]
-        mgmt["api-management-service :8081<br/>organizations · routes · token trust<br/>versions · rollback"]
+    subgraph control [Holds the settings]
+        mgmt["API Management<br/>companies, routes, settings"]
         mysql[("MySQL")]
     end
 
-    kafka{{"Kafka<br/>gateway.org-config · gateway.traffic-events"}}
+    kafka{{"Kafka<br/>settings out · traffic records in"}}
 
-    subgraph insight [Analytics and observability]
-        ana["analytic-service :8082<br/>per-minute rollups"]
+    subgraph insight [Shows what happened]
+        ana["Analytics<br/>stats per company and API"]
         mongo[("MongoDB")]
-        prom["Prometheus"]
-        graf["Grafana<br/>platform admins"]
+        graf["Grafana + Prometheus<br/>system health"]
     end
 
-    backends(["Tenants' own backend services"])
+    backends(["Tenants' own servers"])
 
-    users -->|"/{org}/{path} + JWT"| nginx --> gw
-    gw -->|forward| backends
+    users --> nginx --> gw --> backends
     gw <--> redis
-    admins --> mgmt
+    admins --> mgmt --> mysql
+    mgmt -->|settings| kafka -->|settings| gw
+    gw -->|"a record of every request"| kafka -->|records| ana --> mongo
     admins --> ana
     admins --> graf
-    mgmt --> mysql
-    mgmt -->|"full config per organization, versioned"| kafka
-    kafka -->|config| gw
-    gw -->|"one event per request"| kafka
-    kafka -->|events| ana
-    ana --> mongo
-    graf --> prom
-    prom -.->|scrape| gw
-    prom -.->|scrape| mgmt
-    prom -.->|scrape| ana
 ```
 
-The gateways sit on two Docker networks: the platform network (everything above) and a separate network for tenant
-backends. Routes may never target the platform network, so a tenant can't point a route at Redis or MySQL.
+There are three services:
 
-**How a configuration change travels.** A tenant admin saves a route → api-management bumps the organization's
-version and, inside the same transaction, builds the organization's *complete* configuration → after commit it is
-published to the compacted Kafka topic `gateway.org-config`, keyed by organization → every gateway instance applies
-it if its version is newer (measured: on all 3 instances within ~61 ms, zero failed requests). On startup a gateway
-rebuilds its whole registry from the topic and answers `503` until it has caught up.
+| Service | What it does | Stores data in |
+|---|---|---|
+| **API Management** (`api-management-service`) | Where admins set things up: companies, their admins, their API routes, which login provider to trust. Keeps a history of every settings change and can roll back. | MySQL |
+| **Gateway** (`smart-gateway-service`) | Receives every request from tenants' users, checks it, and forwards it to the tenant's own server. Runs as 3 copies behind nginx so one can fail. | Redis (counters) |
+| **Analytics** (`analytic-service`) | Stores a record of every request and turns it into dashboards: traffic, errors, response times. | MongoDB |
 
-**How a tenant request travels.** `nginx` → a gateway → deny-by-default route match (`METHOD` + exact path
-template) → the tenant's user token is verified against *that tenant's* identity provider (JWKS) → per-user quota
-and route rate limit (Redis, shared by all instances) → idempotency check for idempotent routes → forward with a
-circuit breaker per route and safe retries → one traffic event to Kafka (queued, never slows the request) →
-analytics stores it in MongoDB.
+**What happens when a user calls an API**
+1. The request reaches nginx, which hands it to one of the three gateways.
+2. The gateway checks that this exact method and path is one the company configured. Anything else is rejected.
+3. It checks the user's login token. Each company uses its own login provider (for example Auth0 or Okta); the
+   gateway only accepts tokens that provider signed.
+4. It checks the limits: how many requests this API may receive per minute, and how many one user may send.
+5. It forwards the request to the company's server and returns the answer.
+6. It writes a short record of the request to Kafka. Analytics picks it up from there.
 
-**Who can do what.**
+**What happens when an admin changes a setting**
+1. The admin saves a change in API Management (for example a new route).
+2. API Management gives the company's settings a new version number and sends the complete new settings to Kafka.
+3. All three gateways pick it up and use it right away, no restart needed (measured: in under a tenth of a second).
+
+Because the gateways get their settings from Kafka and keep a copy in memory, they keep serving traffic even
+when API Management is down.
+
+**Who can do what**
 
 | Role | Can |
 |---|---|
-| Platform admin | Create/suspend/activate organizations, create tenant admins, Kafka and gateway health views, all analytics, Grafana |
-| Tenant admin | Own organization only: routes, token settings, configuration history and rollback, own analytics and live performance |
-| Tenant's users | Call the organization's routes through the gateway with a JWT from the organization's own identity provider |
+| Platform admin | Create, suspend and reactivate companies; create their admins; see every company's analytics and the system-health dashboard |
+| Tenant admin | Only their own company: routes, login-provider settings, settings history and rollback, their own analytics |
+| Tenant's users | Call their company's APIs through the gateway, logged in through the company's own login provider |
 
 ---
 
-## Prerequisites
+## 2. What you need
 
-| | |
-|---|---|
-| Docker | Docker Desktop (Windows/macOS) or Docker Engine + Compose v2 (Linux). Free for personal use. |
-| Memory | **8 GB RAM minimum**, Docker VM with **at least 4 GB** (Docker Desktop → Settings → Resources). The stack caps itself at ~2.4 GB; more is better for the load test. |
-| Ports free | `8080 8081 8082 5173 5175` (all interfaces), `3000 9090 6379 9092` (127.0.0.1 only). MySQL and MongoDB publish no ports, so local installs don't clash. |
-| For sample requests | `curl` and a POSIX shell (Git Bash on Windows works) |
-| For the load test | PowerShell (built into Windows; `pwsh` on macOS/Linux). k6 itself runs in Docker. |
+- **Docker with Compose**: Docker Desktop on Windows or macOS, or Docker Engine with the Compose plugin on Linux.
+- **At least 8 GB of RAM**, with Docker allowed to use at least 4 GB (Docker Desktop → Settings → Resources).
+- **These ports free:** 8080, 8081, 8082, 5173, 5175, 3000, 9090, 6379, 9092.
+- **To follow section 4:** `curl` and a terminal like bash (on Windows, Git Bash works).
+- **To run the load test:** PowerShell (built into Windows; called `pwsh` on macOS and Linux).
 
-No JDK, Maven or Node is needed: every image is built inside Docker.
+You do **not** need Java, Maven or Node installed. Everything is built inside Docker.
 
 ---
 
-## Setup and startup
+## 3. Start it
 
 ```bash
-git clone <this repository> gatekeeper
+git clone https://github.com/Nikhil2409/GateKeeper.git gatekeeper
 cd gatekeeper
 
-# optional: every setting has a working default; copy only to change passwords
-cp .env.example .env
-
-docker compose up -d --build      # first build: 5-10 minutes; afterwards ~1 minute
-docker compose ps                 # every container Up / healthy
-curl http://localhost:8080/_gateway/health   # {"status":"UP",...} once configuration is loaded
+docker compose up -d --build
 ```
 
-Stop with `docker compose down` (data stays in named volumes; `down -v` wipes it).
+The first start builds everything and takes 5 to 10 minutes. Later starts take about a minute.
 
-On first start api-management **generates its RS256 signing key pair** into a Docker volume (no key is ever in the
-repository or an image), Flyway creates the schema, and the `dev` profile loads **sample organizations** (acme,
-globex, initech, umbrella, stark, wayne) so the UIs have something to show. Their routes point at made-up hosts
-and their identity providers don't exist, so calls to them through the gateway stop at the token check (`401`).
-The [sample requests](#sample-requests) create a working tenant.
+**Check that it's running:**
+```bash
+docker compose ps                              # every line should say "Up" (some also "healthy")
+curl http://localhost:8080/_gateway/health     # should answer {"status":"UP", ...}
+```
 
-| URL | What | Login |
+**Open it:**
+
+| Address | What | Log in with |
 |---|---|---|
-| http://localhost:5173 | Management UI | `platform-admin` / `admin-pass-123`; sample tenants `<slug>-admin` / `demo-pass-123` |
-| http://localhost:5175 | Analytics UI (System metrics = Grafana for platform admins) | same accounts |
-| http://localhost:8080 | Gateway (nginx → 3 instances) | tenant user JWTs |
-| http://localhost:8081 | api-management API | |
-| http://localhost:8082 | analytics API | |
-| http://localhost:3000 | Grafana (opened through the analytics UI) | platform admin JWT |
-| http://localhost:9090 | Prometheus | |
+| http://localhost:5173 | Management UI | `platform-admin` / `admin-pass-123` |
+| http://localhost:5175 | Analytics UI (platform admins also get "System metrics") | the same |
+| http://localhost:8080 | The gateway (where tenants' users send requests) | |
+| http://localhost:8081 | API Management's API | |
+| http://localhost:8082 | Analytics' API | |
 
-The UI images bake in `localhost` API addresses, so the UIs work from the machine running Docker; the APIs are
-reachable from your network on the published ports.
+> **These are development credentials for local demonstration only.** Change them (see "Changing passwords"
+> below) before exposing the system beyond your own machine. These local demo credentials and default secrets are
+> configured for development only; how the services authenticate and authorize requests is described in sections
+> 1 and 7. Every demo default (admin password, database password, Grafana password, and the `dev` profile that adds the
+> example companies) lives in `docker-compose.yml`, which is meant for local use. A real deployment must supply
+> its own values and must not use the `dev` profile.
+
+On first start the system also adds a few **example companies** (acme, globex, ...) so the UIs aren't empty. Their
+admins log in as `<name>-admin` / `demo-pass-123`, for example `acme-admin`. Their routes point at made-up servers, so
+calling them through the gateway stops at the login check. Section 4 sets up a company that works end to end.
+
+**Stop it** with `docker compose down`. Your data is kept; `docker compose down -v` deletes it too.
+
+**Changing passwords (optional).** Every setting has a working default. To change the defaults, copy
+`.env.example` to `.env` and edit it; the file explains each value. Never commit `.env`.
 
 ---
 
-## Sample requests
+## 4. Try it: a tenant from scratch
 
-A complete tenant end to end: organization → tenant admin → token trust → route → a user calling it through the
-gateway → analytics. The user token comes from the small test identity provider that ships with the load test
-(`loadtest/idp`), so start the stack with its override once:
+This walks through the whole flow with `curl`: create a company, give it an admin, set up one API route, then call
+it as a user and look at the stats.
+
+To call the route you need a logged-in user, and that needs a login provider. The load-test kit includes a small
+test login provider, so start the system with it once:
 
 ```bash
 docker compose -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml up -d
-json() { sed -E "s/.*\"$1\":\"?([^\",}]+)\"?.*/\1/"; }   # tiny JSON field extractor, avoids needing jq
-```
 
-**1. Platform admin: log in, create an organization and its tenant admin**
+# small helper that pulls one field out of a JSON answer
+json() { sed -E "s/.*\"$1\":\"?([^\",}]+)\"?.*/\1/"; }
+```
+This adds the test login provider to the running system and restarts only the stand-in test server (so it can
+serve the provider's public keys); everything else keeps running. The provider's files live in the Docker volume
+`gatekeeper_loadtest-idp` (the project name `gatekeeper` comes from `docker-compose.yml`; if you set
+`COMPOSE_PROJECT_NAME` yourself, use `<your name>_loadtest-idp` in step 3).
+
+**Step 1. As the platform admin, create a company and its admin**
 ```bash
-ADMIN=$(curl -s localhost:8081/auth/login -H 'Content-Type: application/json' \
+ADMIN=$(curl -s http://localhost:8081/auth/login -H 'Content-Type: application/json' \
   -d '{"username":"platform-admin","password":"admin-pass-123"}' | json accessToken)
 
-ORG_ID=$(curl -s localhost:8081/api/platform/organizations -H "Authorization: Bearer $ADMIN" \
+ORG_ID=$(curl -s http://localhost:8081/api/platform/organizations -H "Authorization: Bearer $ADMIN" \
   -H 'Content-Type: application/json' -d '{"name":"Readme Shop","slug":"readme-shop"}' | json id)
 
-curl -s localhost:8081/api/platform/tenant-admins -H "Authorization: Bearer $ADMIN" \
+curl -s http://localhost:8081/api/platform/tenant-admins -H "Authorization: Bearer $ADMIN" \
   -H 'Content-Type: application/json' \
   -d "{\"username\":\"readme-shop-admin\",\"password\":\"readme-pass-123\",\"organizationId\":$ORG_ID}"
 ```
+`slug` is the company's short name. It becomes the start of its URLs: `http://localhost:8080/readme-shop/...`.
 
-**2. Tenant admin: trust an identity provider, add a route**
+**Step 2. As the company's admin, choose a login provider and add a route**
 ```bash
-TENANT=$(curl -s localhost:8081/auth/login -H 'Content-Type: application/json' \
+TENANT=$(curl -s http://localhost:8081/auth/login -H 'Content-Type: application/json' \
   -d '{"username":"readme-shop-admin","password":"readme-pass-123"}' | json accessToken)
 
-curl -s -X PUT localhost:8081/api/tenant/token-settings -H "Authorization: Bearer $TENANT" \
+# accept user tokens from the test login provider
+curl -s -X PUT http://localhost:8081/api/tenant/token-settings -H "Authorization: Bearer $TENANT" \
   -H 'Content-Type: application/json' \
   -d '{"issuer":"http://wiremock:8080/loadtest-idp","jwksUri":"http://wiremock:8080/loadtest-idp/jwks.json","audience":"loadtest-api"}'
 
-curl -s localhost:8081/api/tenant/routes -H "Authorization: Bearer $TENANT" -H 'Content-Type: application/json' \
+# GET /readme-shop/fast is forwarded to the test server, at most 60 requests per minute
+curl -s http://localhost:8081/api/tenant/routes -H "Authorization: Bearer $TENANT" -H 'Content-Type: application/json' \
   -d '{"routeId":"products","name":"Products","pathPattern":"/fast","targetBaseUrl":"http://wiremock:8080",
        "targetPathPrefix":"","allowedMethods":["GET"],"requestsPerMinute":60,"responseTimeoutMs":2000,
        "idempotencyEnabled":false,"headerRules":[],"allowedHeaders":[]}'
 ```
 
-**3. A user calls the route through the gateway**
+**Step 3. As a user, call the route through the gateway**
 ```bash
+# a login token for a test user, from the test login provider
 USER_TOKEN=$(docker run --rm -v gatekeeper_loadtest-idp:/idp node:22-alpine \
   node -e "console.log(require('/idp/tokens.json').tokens[0])")
-# Git Bash on Windows: prefix the docker command with MSYS_NO_PATHCONV=1
+# on Windows Git Bash, put MSYS_NO_PATHCONV=1 in front of "docker run"
 
-curl -i localhost:8080/readme-shop/fast -H "Authorization: Bearer $USER_TOKEN"
-# HTTP/1.1 200, X-Correlation-Id: ..., {"ok":true}
+curl -i http://localhost:8080/readme-shop/fast -H "Authorization: Bearer $USER_TOKEN"
+```
 
-curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/readme-shop/fast          # 401: no token
-curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/readme-shop/nope \
-  -H "Authorization: Bearer $USER_TOKEN"                                           # 404: not a configured route
-for i in $(seq 65); do curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/readme-shop/fast \
+What you should see:
+
+| Request | Answer | Why |
+|---|---|---|
+| The call above | `200` and `{"ok":true}` | allowed and forwarded |
+| The same without the `Authorization` header | `401` | no logged-in user |
+| `/readme-shop/nope` | `404` | not a route the company configured |
+| More calls than the user's quota within one minute | `200` until the quota is used up, then `429 Too Many Requests` | one user may use only a tenth of the route's 60 per minute, so 6 per minute |
+
+```bash
+for i in $(seq 65); do curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/readme-shop/fast \
   -H "Authorization: Bearer $USER_TOKEN"; done | sort | uniq -c
-# 6 x 200, the rest 429: one user may use a tenth of the route's 60/min (per-user quota), the rest QUOTA_EXCEEDED
 ```
+In our run this printed `5 200` and `60 429`: the call above had already used one of the six. These counts are an
+example, not guaranteed output: the split depends on how many calls you made before, and the loop only counts
+status codes, so a run that crosses into the next minute gets a fresh quota partway through.
 
-**4. The tenant's analytics (numbers are a few seconds behind, see design choice 7)**
+**Step 4. As the company's admin, look at the stats** (wait about 5 seconds first: the numbers are updated in the
+background, see design decision 6)
 ```bash
-curl -s "localhost:8082/analytics/summary?range=1h" -H "Authorization: Bearer $TENANT"
-curl -s "localhost:8082/analytics/routes?range=1h" -H "Authorization: Bearer $TENANT"
-curl -s "localhost:8082/analytics/live/routes" -H "Authorization: Bearer $TENANT"   # from Prometheus
+curl -s "http://localhost:8082/analytics/summary?range=1h" -H "Authorization: Bearer $TENANT"
+curl -s "http://localhost:8082/analytics/routes?range=1h"  -H "Authorization: Bearer $TENANT"
 ```
+In our run, a query made immediately showed 54 requests; 7 seconds later it showed 66, exactly the calls made. You
+can also log in to the Analytics UI as `readme-shop-admin` / `readme-pass-123`.
 
-**5. Optional: tidy up** (organizations are never hard-deleted)
+**Clean up (optional).** Companies are never deleted, only suspended:
 ```bash
-curl -s -X PATCH localhost:8081/api/platform/organizations/$ORG_ID/suspend -H "Authorization: Bearer $ADMIN"
+curl -s -X PATCH http://localhost:8081/api/platform/organizations/$ORG_ID/suspend -H "Authorization: Bearer $ADMIN"
 ```
-
-Other useful endpoints: `GET /api/tenant/configuration/versions` (history), `GET .../versions/{v}` (preview + diff),
-`POST .../versions/{v}/rollback`, `GET /api/platform/kafka`, `GET localhost:8080/_gateway/status`,
-`GET localhost:8081/.well-known/jwks.json`.
 
 ---
 
-## Building and tests
+## 5. Tests
 
+**There are no automated tests yet.** The project has no unit tests, integration tests or CI pipeline. So far,
+behaviour has been checked by hand with scripts like the one above and by the load test (section 6). The load test
+measures behaviour under traffic; it does **not** replace unit or integration tests and doesn't protect against
+regressions.
+
+This is the project's clearest gap. The next engineering milestone, in priority order:
+1. Tenant isolation and authorization tests (a tenant admin can never read or change another company's data).
+2. Configuration version ordering and rollback tests (newer versions win, rollback publishes a new version).
+3. Idempotency tests, including concurrent duplicates and Redis failure.
+4. Rate-limit accuracy across multiple gateway instances.
+5. Analytics ingestion and rollup tests (rollups match the raw events, redelivery doesn't double-count).
+6. A CI workflow that runs the regression suite on every push.
+
+To check that everything builds:
 ```bash
-# compile and package one service (uses the Maven wrapper; needs JDK 21 locally)
-cd smart-gateway-service && ./mvnw -q package -DskipTests
-
-# or build every image without a local JDK
 docker compose build
 ```
 
-**Automated tests: not yet written.** The repository currently has **no unit or integration test suite and no CI**.
-Behaviour was verified by scripted end-to-end checks during development and by the k6 load test below. A
-Testcontainers-based suite (MySQL, MongoDB, Redis, Kafka) and a GitHub Actions pipeline are the next planned step.
-
-The load test is the executable verification today:
-
+To check that the whole system works end to end (about 3 minutes):
 ```powershell
-.\loadtest\run.ps1 -Test baseline     # ~3 minutes, a quick check that the whole stack works end to end
+.\loadtest\run.ps1 -Test baseline
 ```
 
 ---
 
-## Load testing
+## 6. Load test
 
-### Methodology
-Everything lives in `loadtest/` and is layered over the main compose file; none of it is part of the product.
+The load test sends a lot of traffic through the system with [k6](https://k6.io) and measures what happens,
+including when parts of the system are switched off on purpose. Everything for it is in `loadtest/`; none of it is
+part of the product itself.
 
-- **Test tenants are created through the product's own APIs** at the start of every run (no seed data): three
-  organizations (`lt-shop` 50% of traffic, `lt-payments` 30%, `lt-media` 20%), each with a tenant admin
-  (`<slug>-admin` / `loadtest-pass-123`), token settings and five routes, all backed by WireMock:
-  `fast`, `slow` (200 ms), `fail` (always 500), `limited` (600/min), `orders` (idempotent POST).
-- **Their users' tokens** come from `loadtest-idp`, a one-shot container that generates an RSA key, publishes its
-  JWKS through WireMock and mints 200 user tokens. k6 runs in Docker on both networks.
-- **Every run waits** until all three gateways serve the tenants and warms their key caches before measuring.
-- **Outages** are injected by `run.ps1`: the component is stopped 60 s into the measured part and started 60 s later.
-- **Results** go to `loadtest/results/` (gitignored): a k6 summary (`.json`) and per-request samples (`.csv.gz`)
-  per run, a Prometheus snapshot per outage run, `machine.txt` with the hardware. The test tenants' traffic also
-  shows in the analytics UI and Grafana like any tenant's.
+### How it works
+- **It sets up its own test companies** through the normal APIs each time: `lt-shop` (gets 50% of the traffic),
+  `lt-payments` (30%) and `lt-media` (20%). Each has the same five routes. Behind them is a stand-in server
+  (WireMock) that answers instantly, after 200 ms, or always with an error, depending on the route.
+- **It brings its own login provider**, which hands out 200 test users.
+- **It waits until all three gateways are ready** before measuring.
+- **For the outage tests** it stops one part of the system 60 seconds in and starts it again 60 seconds later.
 
-| Test | What it does | Measures |
+### The tests
+
+| Test | What it does | What it shows |
 |---|---|---|
-| `baseline` | 300 req/s straight to the backend, then a 15 s warm-up, then 300 req/s through nginx + gateway | latency the gateway adds |
-| `throughput` | rate climbs in 8 steps to `-MaxRate`, stops itself at >1% errors or p99 >500 ms | highest stable req/s |
-| `scaling` | throughput against one instance directly, then three behind nginx | per-instance capacity |
-| `ratelimit` | 2x the route limit for exactly 3 clock minutes, 200 users | rate-limit accuracy across instances |
-| `hotreload` | a route changed every 10 s under 200 req/s | failed requests, propagation time |
-| `failover` | 200 req/s mixed traffic, `smart-gateway-2` stopped mid-run | behaviour without an instance |
-| `chaos` | same, stopping `kafka`, `redis`, `api-management-service` one at a time | failure modes |
+| `baseline` | the same requests straight to the server, then through the gateway | how much time the gateway adds |
+| `throughput` | increases the traffic step by step until errors or slow answers appear | how much traffic it can handle |
+| `scaling` | the same with one gateway, then with three | capacity of one gateway |
+| `ratelimit` | sends twice the allowed number of requests for 3 minutes | rate-limit accuracy across three gateways |
+| `hotreload` | changes a route every 10 seconds under traffic | whether setting changes cause errors |
+| `failover` | stops one gateway mid-test | what happens when a gateway dies |
+| `chaos` | stops Kafka, Redis and API Management one at a time | what happens when each dependency dies |
 
+### Run it
 ```powershell
-.\loadtest\run.ps1                                   # everything, ~40 minutes
-.\loadtest\run.ps1 -Test throughput -MaxRate 1000    # one test
-.\loadtest\run.ps1 -Test chaos -ChaosServices redis  # one outage
+.\loadtest\run.ps1                                     # all tests, about 40 minutes
+.\loadtest\run.ps1 -Test throughput -MaxRate 1000      # one test
+.\loadtest\run.ps1 -Test chaos -ChaosServices redis    # one outage
 ```
+Results are saved in `loadtest/results/`: a summary and the raw measurements for each test, plus `machine.txt`
+describing the computer. The test companies' traffic also shows up in the Analytics UI. Log in as `lt-shop-admin`,
+`lt-payments-admin` or `lt-media-admin` with `loadtest-pass-123`.
 
 ### Results
 
-> **⚠ Machine-specific results.** Measured on one laptop: **AMD Ryzen 5 5600H (6 cores / 12 threads), 7.3 GB RAM,
-> Windows 11, Docker Desktop VM with 3.5 GB / 12 CPUs, 2026-10-20.** k6, the three gateways, nginx and every
-> dependency (Kafka, Redis, MySQL, MongoDB, Prometheus, Grafana) **share that machine**, and it was memory-starved
-> (~0.7 GB free). Treat absolute throughput and tail latency as a lower bound; they will be re-measured on a larger
-> machine. Ratios, correctness and failure behaviour carry over.
+> **⚠ These numbers depend on the machine.** They were measured on one laptop: AMD Ryzen 5 5600H (6 cores),
+> 7.3 GB RAM, Windows 11, with Docker allowed 3.5 GB. The test tool and the whole system shared that laptop, and it
+> was short on memory. Expect better throughput and response times on a bigger machine. The functional outcomes
+> below (limit accuracy, errors, behaviour during outages) were observed in these test runs, but results may vary
+> with hardware, timing and resource contention. The measurements have not yet been reproduced on a larger
+> machine.
 
-**Latency added by the gateway** (300 req/s, 0 errors)
+**How much time the gateway adds** (300 requests per second, no errors)
 
-| | p50 | p95 | p99 | max |
-|---|---|---|---|---|
-| Straight to the backend | 0.4 ms | 0.7 ms | 2.1 ms | |
-| Through nginx + gateway, steady state | **2.5 ms** | **4.2 ms** | **6.3 ms** | 40 ms |
-| First ~5 s after the gateways start (cold JIT and connection pools) | | | 103 ms | 1.3 s |
+| | half of requests faster than | 95% faster than | 99% faster than |
+|---|---|---|---|
+| Straight to the server | 0.4 ms | 0.7 ms | 2.1 ms |
+| Through the gateway | **2.5 ms** | **4.2 ms** | **6.3 ms** |
 
-That covers the token check, Redis rate limit and quota, routing, an extra nginx hop and publishing the traffic
-event. A rerun on the busier machine measured p50 3.8 / p95 12 / p99 26 ms.
+At 300 requests per second, the path through the gateway measured 2.5 ms (half of requests), 4.2 ms (95%) and
+6.3 ms (99%), compared with 0.4 ms, 0.7 ms and 2.1 ms when calling the server directly. These are two separately
+measured distributions, so their difference is only an indication of what the gateway's checks cost, not an exact
+per-request overhead. Right after the gateways start, the first few seconds are slower (the slowest 1% around
+100 ms) while they warm up. These results are specific to the test environment.
 
-**Capacity and correctness**
+**Capacity and accuracy**
 
 | Test | Result |
 |---|---|
-| Throughput, 3 instances | **1,000 req/s held** (the cap set for this laptop), 0% errors, p99 30 ms |
-| One instance alone | stable to **~550-600 req/s**; beyond that its circuit breaker opened and the run stopped itself |
-| Rate-limit accuracy, 3 instances sharing Redis | **1,803 allowed of 1,800 expected (+0.17%)**, every other request 429 |
-| Route changed every 10 s under load | **0 failed requests** of 26,185; on all instances in **61 ms p50, 72 ms max** |
-| Analytics dashboards at 864k stored events | **18-58 ms** per call (were 1.8-19 s before the rollups); counts identical; new data visible in ~2 s |
+| Traffic through 3 gateways | **1,000 requests per second** with no errors (the highest rate tried on this laptop) |
+| One gateway on its own | handles about **550-600 requests per second** on this laptop |
+| Limit accuracy (limit 600 per minute, across 3 gateways) | **1,803 let through for 1,800 expected (0.17% off)** |
+| Changing a route every 10 seconds under traffic | **0 failed requests**; every gateway had the change within **0.07 seconds** |
+| Analytics dashboards with 864,000 stored requests | load in **0.02-0.06 seconds** |
 
-**Failure modes under load** (200 req/s; the intentional `/fail` route's ~5% errors excluded)
+**When something breaks** (200 requests per second; the deliberately failing route left out)
 
-| Stopped for 60 s | Tenant traffic | Notes |
-|---|---|---|
-| One gateway instance | **0 failures** while down, nginx uses the other two | 0.18% `503` during the instance's few seconds of restart |
-| api-management | **no impact** | gateways serve from their own configuration copy; no configuration changes possible meanwhile |
-| Kafka | **0 failures** | traffic events wait in each gateway's bounded queue (max 5,138 seen); **243 events (~2%) lost** that were in flight |
-| Redis | **0 failures**, idempotent routes stay up | after ~5 failed calls per instance a breaker skips Redis; limits counted per instance; idempotency bypassed (`Idempotency-Status: unchecked`); back to normal ~2 s after Redis returns |
+| Switched off for 60 s | Observed impact |
+|---|---|
+| One of the three gateways | The other two continued serving; **0.18%** of requests failed while the stopped one restarted. |
+| API Management | No request impact observed during the test. Gateways kept serving from their own copy of the settings; settings could not be changed meanwhile. |
+| Kafka | No request failures observed; about **2%** of traffic records for analytics were lost. |
+| Redis | No request failures observed; rate limiting degraded to per-gateway counting and the gateway's idempotency check was bypassed, so the company's server must deduplicate (see decision 4). |
 
----
-
-## Critical design choices
-
-The full log (choice, reason, rejected alternatives) has 73 entries; these are the ones the system rests on.
-
-1. **The gateway never talks to the control plane.** Configuration arrives only through a compacted Kafka topic, one
-   message per organization with its *complete* configuration and a version. Newer wins, so out-of-order or
-   duplicate messages are harmless, a restarted gateway rebuilds itself from the topic, and api-management can be
-   down without affecting traffic (measured).
-2. **Rollback is a new, higher version**, not a flag that lets gateways accept a lower one. A late or duplicated
-   "rollback" message could otherwise undo newer changes. History keeps the last 5 versions with a preview and diff.
-3. **Deny by default.** Only configured `METHOD` + exact path templates pass (no wildcards, no `.`/`..`); only
-   allowlisted headers are forwarded; tenant routes can't target platform hosts, loopback, cloud metadata or the
-   platform network (checked when saving *and* on resolved IPs when forwarding); two Docker networks separate the
-   platform from tenant backends.
-4. **Every tenant brings its own identity provider.** The gateway verifies users' JWTs against the organization's
-   JWKS, issuer and audience (asymmetric algorithms only, keys cached, rotation handled). The subject becomes the
-   user id for quotas and idempotency.
-5. **Idempotency is an end-to-end contract.** Enabling it on a route means the backend deduplicates on
-   `Idempotency-Key`. The gateway always forwards the key, replays stored responses, answers `409` for a concurrent
-   duplicate and retries keyed requests safely. This is also why a Redis outage can *bypass* the gateway's check
-   instead of failing payments (choice 6).
-6. **Dependencies may fail; tenant traffic keeps flowing.** Kafka down: events are queued, then dropped and counted,
-   never blocking a request. Redis down: a circuit breaker skips it instantly (a background ping, not real requests,
-   detects recovery), rate limits fall back to `limit / instances` per instance, idempotency is bypassed with the key
-   still forwarded. Upstream failing: a circuit breaker per route, retries only when safe and within the route's
-   timeout.
-7. **Analytics reads precomputed per-minute rollups.** A background job recomputes (never increments) only the
-   minutes that received new events every 5 s, so dashboards never scan raw events, redeliveries can't double-count,
-   and late events are still counted. Trade-off: numbers are a few seconds old and percentiles come from a
-   56-bucket latency histogram (within ~10%).
-8. **One identity for everything.** api-management issues RS256 JWTs; analytics and Grafana verify them with its
-   public key (Grafana maps only `PLATFORM_ADMIN` to a role). Tenants never get Grafana: it can't stop one tenant
-   querying another's metrics, so tenants get their own server-scoped live performance view instead.
-9. **Tenant isolation from the token only.** A tenant admin's organization comes from the signed JWT, never from a
-   URL or parameter; analytics forces the organization into every query.
-10. **nginx only skips instances it cannot reach.** A `502`/`503` *from* a gateway is a tenant-level answer
-    (circuit open, backend down) and is passed back, not counted against the instance (see known issue 1).
+These are observations from single test runs on the machine above, not guarantees.
 
 ---
 
-## Known issues and limitations
+## 7. Important design decisions
 
-**Found by the load test and fixed**
+Each of these was a deliberate choice; the full reasoning is kept in the project's design log.
 
-| # | Issue | Fix |
-|---|---|---|
-| 1 | nginx counted a gateway's `502`/`503` as that instance failing. One tenant's failing route took **all three** instances out of rotation and every tenant got `502` (~52% failures). | nginx retries/skips only on connection errors and timeouts |
-| 2 | A Redis outage took down **every idempotent route** (`503`) and added the 500 ms Redis timeout to every request using Redis. | Redis circuit breaker, per-instance limits, idempotency bypass |
-| 3 | Dashboards took **5-19 s** per call at ~466k stored events (aggregations over raw events). | per-minute rollups (design choice 7) |
-| 4 | MongoDB thrashed at its 320 MB memory cap and its health check timed out under load. | 512 MB cap, 10 s health-check timeout |
-
-**Open / known limitations**
-
-| # | Limitation | Notes |
-|---|---|---|
-| 5 | A restarting gateway answers `503` for a few seconds until its configuration is loaded | 0.18% of requests in the failover run; nginx can't tell this `503` from a tenant's |
-| 6 | Traffic events in flight when Kafka goes down are lost (~2% in the test) | by design: losing some analytics is preferred to slowing requests |
-| 7 | Short stalls (p99 1-1.4 s on every route) shortly after a restarted dependency came back | most likely the memory-starved test machine; to be confirmed on a larger one |
-| 8 | No automated test suite or CI yet | next planned step |
-| 9 | Percentiles in analytics are approximate (histogram buckets, ~10%) | counts are exact |
-| 10 | While Redis is down, limits assume nginx spreads traffic evenly; replays and `409`s for duplicates are unavailable | a tenant whose backend doesn't deduplicate could see a double execution then (the idempotency contract) |
-| 11 | Circuit-breaker and fallback state is per gateway instance | |
-| 12 | Machine callers need JWTs from the tenant's identity provider (e.g. OAuth2 client credentials); no API keys | deliberate scope decision |
-| 13 | The UIs use `localhost` API addresses baked in at build time | rebuild `ui/` images with other `VITE_*` args to serve them remotely |
-
----
-
-## Configuration reference
-
-| Setting | Default | Where |
-|---|---|---|
-| Access token lifetime | 15 min | api-management `gatekeeper.security.jwt.access-token-ttl` |
-| Configuration versions kept | 5 | api-management `gatekeeper.config-history.max-versions` |
-| Per-user quota | a tenth of the route's limit (min 1) | derived |
-| Rate-limit window | fixed 1 minute, shared by all instances | gateway |
-| Circuit breaker per route | opens at 50% failures over 20 calls (min 10), 30 s open, 3 trial calls | gateway `gateway.circuit-breaker.*` |
-| Retries | up to 3 attempts, backoff from 100 ms, within the route timeout; GET/HEAD/OPTIONS and keyed requests on idempotent routes on failures and 502/503/504, other methods only if never sent | gateway `gateway.retry.*` |
-| Redis | 500 ms timeout; breaker after 5 calls ≥50% failed, probe every 2 s; `GATEWAY_CLUSTER_SIZE=3` | gateway `gateway.redis.*`, compose |
-| Idempotency record TTL | 24 h | gateway `gateway.idempotency.ttl` |
-| Traffic event queue | 10,000 per instance | gateway `gateway.traffic-events.queue-size` |
-| Analytics rollup interval | 5 s | analytics `analytics.rollup.interval-ms` |
-| Raw events / rollups kept | 15 days (TTL indexes) | MongoDB |
-| Prometheus retention | 30 days | compose |
-| Container memory | ~2.4 GB of caps in total; Java services ~200 MB each in use | compose, Dockerfiles |
-
-Secrets and passwords: see [`.env.example`](.env.example). JWT keys are generated on first start into the
-`jwt-keys` volume; the private key is owner-only and never leaves it.
+1. **The gateways never ask API Management for anything.** Settings are pushed to them through Kafka, always the
+   company's complete settings with a version number, and a gateway only takes a newer version. So messages
+   arriving twice or out of order do no harm, a restarted gateway catches up on its own, and API Management can be
+   down without affecting traffic.
+2. **Rolling back creates a new version.** It doesn't send an "older" one. Going back to version 4 publishes the
+   settings of version 4 as, say, version 9. A delayed or duplicated message can therefore never undo a later
+   change. The last 5 versions are kept, and each can be previewed and compared before rolling back.
+3. **Everything is blocked unless it was set up.** Only configured paths and methods go through, only allowed
+   headers are passed on, and a route can never point at the platform's own internal services.
+4. **Safe retries for payments and orders (idempotency).** A user's app may send the same "place order" request
+   twice, for example after a dropped connection. On routes marked as idempotent, the app sends a unique key with
+   each request. The gateway recognises a repeat and returns the first answer instead of placing the order again,
+   and the company's own server is expected to check the key too: turning idempotency on for a route means the
+   company promises to deduplicate on that key. During a Redis outage the gateway bypasses its own check so
+   requests can continue. The company's server must still deduplicate using the `Idempotency-Key`; otherwise
+   duplicate operations may occur while Redis is down.
+5. **When something it depends on breaks, the gateway keeps serving.** If Kafka is down, records are held and, if
+   needed, dropped; requests never wait for them. If Redis is down, the gateway stops calling it right away
+   instead of waiting each time, and counts limits on its own. If a company's server keeps failing, the gateway
+   pauses calls to it for 30 seconds (a *circuit breaker*) instead of piling on more requests.
+6. **Dashboards read pre-calculated numbers.** Every five seconds a background job recomputes the per-minute
+   summaries for the minutes that received new events. Dashboards query these summaries instead of scanning all
+   raw records. Recomputing a minute (rather than adding to a running total) avoids double-counting when a minute
+   is rolled up again and lets late-arriving events be included. Each raw event is stored with the gateway's request
+   id as its MongoDB `_id` (always unique) and saved as an upsert, so a Kafka redelivery of the same event replaces
+   the stored record instead of adding a second one. Counts are exact relative to the stored events.
+   Response-time percentiles are estimates from latency buckets about 20% wide: in our tests they were within
+   about 10% of the exact values, but the error depends on how the traffic's response times are spread. The
+   numbers are a few seconds old.
+7. **One login for everything.** API Management issues the login tokens; Analytics and Grafana check them with API
+   Management's public key. Only platform admins get Grafana. Tenants get their own live view instead, because
+   Grafana can't stop one company from seeing another's numbers.
+8. **A company's data is separated by the login token.** A tenant admin's company is read from their token, never
+   from the URL, so they can't ask for another company's data.
 
 ---
 
-## Repository layout
+## 8. Known issues
+
+**Found by the load test and already fixed**
+
+| Problem | Fix |
+|---|---|
+| When one company's API kept failing, nginx wrongly treated all three gateways as broken, so **every** company got errors (about 52% of requests failed). | nginx now only skips a gateway it can't reach at all |
+| When Redis was down, every order or payment request failed, and every request waited half a second first. | the gateway now stops calling Redis right away and carries on without it |
+| Dashboards took 5 to 19 seconds to load once there was a lot of traffic data. | dashboards now read pre-calculated per-minute totals |
+| The analytics database (MongoDB) ran out of memory under load, and its health check timed out. | memory limit raised from 320 MB to 512 MB, health-check timeout from 5 s to 10 s |
+
+**Still open**
+
+| Issue | Details |
+|---|---|
+| No automated tests or CI yet | the next milestone: regression tests for isolation, config ordering and rollback, idempotency, limits and analytics, then CI (section 5) |
+| A gateway that is restarting returns errors for a few seconds | 0.18% of requests in the test |
+| When Kafka goes down, about 2% of traffic records for analytics are lost | a deliberate trade-off: losing some stats is better than slowing users down |
+| Short slowdowns right after a stopped part restarted | most likely the test laptop running out of memory; to be checked on a bigger machine |
+| Response times on the dashboards are estimates | within about 10% in our tests; the error depends on the traffic; request counts are exact |
+| While Redis is down, limits are approximate and repeated orders aren't caught by the gateway | the company's server must deduplicate them; if it doesn't, duplicates can happen (decision 4) |
+| No API keys for machine-to-machine callers | they use tokens from the company's login provider instead |
+| The UIs only work on the machine running Docker | their API addresses (`localhost`) are fixed when they're built |
+
+---
+
+## 9. Settings
+
+| What | Default |
+|---|---|
+| Login tokens stay valid for | 15 minutes |
+| Settings versions kept for rollback | 5 |
+| How much one user may use of a route's limit | a tenth |
+| Limits are counted per | minute, shared by all gateways |
+| A failing company server is paused | after half of its last 20 calls failed, for 30 seconds |
+| A failed request is retried | up to 3 times, only when that's safe, within the route's time limit |
+| A stored answer for repeated orders is kept | 24 hours |
+| Dashboard numbers are updated every | 5 seconds |
+| Traffic records are kept | 15 days |
+| Memory the whole system may use | about 2.4 GB in total |
+
+Passwords and other changeable values are in [`.env.example`](.env.example). The keys that sign login tokens are
+created automatically on first start and never leave the Docker volume they live in.
+
+---
+
+## 10. Folder layout
 
 ```
-api-management-service/   control plane (Spring Boot 4, Java 21, MySQL, Flyway)
-smart-gateway-service/    data plane (Spring Boot 4, Java 21, Redis, Resilience4j)
-analytic-service/         analytics (Spring Boot 4, Java 21, MongoDB)
-ui/                       api-management-ui and analytics-ui (React + Vite)
-docker/                   nginx, WireMock mappings, Prometheus, Grafana provisioning, UI image
-loadtest/                 k6 scripts, test identity provider, compose override, run.ps1
-docker-compose.yml        the whole system
-.env.example              optional settings
+api-management-service/   settings service (Java 21, Spring Boot, MySQL)
+smart-gateway-service/    gateway (Java 21, Spring Boot, Redis)
+analytic-service/         analytics (Java 21, Spring Boot, MongoDB)
+ui/                       the two web UIs (React)
+docker/                   nginx, Prometheus, Grafana and test-server settings
+loadtest/                 the load test: k6 scripts, test login provider, run.ps1
+docker-compose.yml        starts the whole system
+.env.example              changeable passwords and settings
 ```
