@@ -1,7 +1,7 @@
 package in.code.gatekeeper.analytic.service;
 
 import in.code.gatekeeper.analytic.document.OrganizationDocument;
-import in.code.gatekeeper.analytic.document.TrafficEventDocument;
+import in.code.gatekeeper.analytic.document.TrafficMinuteDocument;
 import in.code.gatekeeper.analytic.dto.responseDto.OrganizationStatsResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.RouteStatsResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.SummaryResponse;
@@ -30,8 +30,9 @@ import static in.code.gatekeeper.analytic.service.TrafficAggregations.match;
 import static in.code.gatekeeper.analytic.service.TrafficAggregations.statsGroup;
 
 /**
- * The dashboard, routes and organizations views. organizationId null = every organization (platform admins);
- * callers pass the already-scoped id (AnalyticsUser.scope).
+ * The dashboard, routes and organizations views, summed from the per-minute rollups (traffic_minutes, at most a
+ * few seconds behind, decision #73). organizationId null = every organization (platform admins); callers pass the
+ * already-scoped id (AnalyticsUser.scope).
  */
 @Service
 @RequiredArgsConstructor
@@ -140,10 +141,10 @@ public class TrafficStatsService {
         long fromMs = window.from().toEpochMilli();
         long sliceMs = (window.to().toEpochMilli() - fromMs) / ROUTE_TREND_SLICES;
         Document slice = new Document("$toInt", new Document("$floor", new Document("$divide", List.of(
-                new Document("$subtract", List.of(new Document("$toLong", "$timestamp"), fromMs)), sliceMs))));
+                new Document("$subtract", List.of(new Document("$toLong", "$minute"), fromMs)), sliceMs))));
         Document group = new Document("$group", new Document("_id", new Document("organizationSlug", "$organizationSlug")
                 .append("routeId", "$routeId").append("slice", slice))
-                .append("requests", new Document("$sum", 1)));
+                .append("requests", TrafficAggregations.sum("requests")));
 
         Map<String, long[]> trends = new HashMap<>();
         for (Document row : run(List.of(match(window.from(), window.to(), organizationId), HAS_ROUTE, group))) {
@@ -165,7 +166,7 @@ public class TrafficStatsService {
     }
 
     private List<Document> run(List<Document> pipeline) {
-        return mongoTemplate.getCollection(mongoTemplate.getCollectionName(TrafficEventDocument.class))
+        return mongoTemplate.getCollection(mongoTemplate.getCollectionName(TrafficMinuteDocument.class))
                 .aggregate(pipeline)
                 .into(new ArrayList<>());
     }

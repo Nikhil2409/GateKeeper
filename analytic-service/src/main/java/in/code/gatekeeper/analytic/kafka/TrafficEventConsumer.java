@@ -11,6 +11,8 @@ import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.Instant;
+
 /**
  * Stores every traffic event from the gateway. Saving by requestId makes redelivery harmless (Kafka delivers at
  * least once): the same event overwrites itself instead of being counted twice.
@@ -47,6 +49,6 @@ public class TrafficEventConsumer {
                 event.timestamp(), event.gatewayInstanceId(), event.organizationId(), event.organizationSlug(),
                 event.routeId(),
                 event.method(), event.path(), event.status(), event.latencyMs(), event.clientIp(),
-                event.rejectReason(), event.idempotencyOutcome(), event.idempotencyKey()));
+                event.rejectReason(), event.idempotencyOutcome(), event.idempotencyKey(), Instant.now()));
     }
 }

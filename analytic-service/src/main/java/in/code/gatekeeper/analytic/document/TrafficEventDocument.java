@@ -15,6 +15,8 @@ import java.time.Instant;
  * same event overwrites instead of counting twice. Documents expire after 15 days: enough for the 7-day range and
  * the 7 days before it (the deltas).
  *
+ * storedAt (when this service saved it) tells TrafficRollupService which minutes got new events, late ones included.
+ *
  * Field names are used as strings in the aggregation pipelines (TrafficAggregations), keep them in sync.
  */
 @Getter
@@ -22,6 +24,7 @@ import java.time.Instant;
 @AllArgsConstructor
 @Document("traffic_events")
 @CompoundIndex(name = "org_time", def = "{'organizationId': 1, 'timestamp': -1}")
+@CompoundIndex(name = "outcome_time", def = "{'idempotencyOutcome': 1, 'timestamp': -1}")
 public class TrafficEventDocument {
 
     @Id
@@ -45,4 +48,7 @@ public class TrafficEventDocument {
     private String rejectReason;
     private String idempotencyOutcome;
     private String idempotencyKey;
+
+    @Indexed(name = "stored_at")
+    private Instant storedAt;
 }

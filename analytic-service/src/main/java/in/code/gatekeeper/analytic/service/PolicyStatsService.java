@@ -3,10 +3,12 @@ package in.code.gatekeeper.analytic.service;
 import in.code.gatekeeper.analytic.document.OrganizationDocument;
 import in.code.gatekeeper.analytic.document.OrganizationDocument.RouteLimit;
 import in.code.gatekeeper.analytic.document.TrafficEventDocument;
+import in.code.gatekeeper.analytic.document.TrafficMinuteDocument;
 import in.code.gatekeeper.analytic.dto.responseDto.IdempotencyStatsResponse;
 import in.code.gatekeeper.analytic.dto.responseDto.IdempotencyStatsResponse.RecentOutcome;
 import in.code.gatekeeper.analytic.dto.responseDto.RateLimitUsageResponse;
 import in.code.gatekeeper.analytic.repository.OrganizationRepository;
+import in.code.gatekeeper.analytic.service.TrafficAggregations.Stats;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
@@ -24,12 +26,14 @@ import java.util.List;
 import java.util.Map;
 
 import static in.code.gatekeeper.analytic.service.TrafficAggregations.match;
+import static in.code.gatekeeper.analytic.service.TrafficAggregations.sum;
 import static org.springframework.data.mongodb.core.query.Criteria.where;
 
 /**
  * The traffic-policy views: how close each limited route is to its rate limit, and what idempotency did.
- * Everything is derived from the gateway's traffic events (this service never reads the gateway's Redis), so the
- * numbers trail the gateway by the event delivery delay.
+ * Everything is derived from the gateway's traffic events (this service never reads the gateway's Redis): counts
+ * from the per-minute rollups (decision #73), so the numbers trail the gateway by the event delivery delay plus a
+ * few seconds; the recent outcomes list from the raw events.
  */
 @Service
 public class PolicyStatsService {
@@ -52,9 +56,9 @@ public class PolicyStatsService {
     public List<RateLimitUsageResponse> rateLimits(Long organizationId) {
         Instant now = Instant.now();
         Instant windowStart = Instant.ofEpochSecond(now.getEpochSecond() / 60 * 60);   // the gateway's 1-minute window
-        Map<String, Long> used = countByRoute(match(windowStart, windowStart.plusSeconds(60), organizationId), null);
-        Map<String, Long> rejected = countByRoute(match(now.minus(Duration.ofHours(1)), now.plusSeconds(1),
-                organizationId), new Document("$match", new Document("status", 429)));
+        Map<String, Long> used = sumByRoute(match(windowStart, windowStart.plusSeconds(60), organizationId), "requests");
+        Map<String, Long> rejected = sumByRoute(match(now.minus(Duration.ofHours(1)), now.plusSeconds(60),
+                organizationId), "rateLimited");
 
         List<RateLimitUsageResponse> rows = new ArrayList<>();
         for (OrganizationDocument organization : organizations(organizationId)) {
@@ -76,16 +80,14 @@ public class PolicyStatsService {
         Instant now = Instant.now();
         Instant hourAgo = now.minus(Duration.ofHours(1));
 
-        Map<String, Long> lastHour = new HashMap<>();
-        run(List.of(match(hourAgo, now.plusSeconds(1), organizationId),
-                new Document("$match", new Document("idempotencyOutcome", new Document("$in", NOTABLE_OUTCOMES))),
-                new Document("$group", new Document("_id", "$idempotencyOutcome").append("count", new Document("$sum", 1)))))
-                .forEach(row -> lastHour.put(row.getString("_id"), row.get("count", Number.class).longValue()));
+        Document lastHour = first(run(List.of(match(hourAgo, now.plusSeconds(60), organizationId),
+                new Document("$group", new Document("_id", null).append("replays", sum("replays"))
+                        .append("conflicts", sum("conflicts")).append("mismatches", sum("mismatches"))))));
 
         // approximate: every execution stored a response, minus the few released after a 5xx
-        long storedKeys = mongoTemplate.count(new Query(scoped(organizationId,
-                where("timestamp").gte(now.minus(idempotencyTtl)).and("idempotencyOutcome").is("EXECUTED"))),
-                TrafficEventDocument.class);
+        long storedKeys = Stats.number(first(run(List.of(match(now.minus(idempotencyTtl), now.plusSeconds(60),
+                organizationId), new Document("$group", new Document("_id", null).append("executed", sum("executed")))))),
+                "executed");
 
         Query recentQuery = new Query(scoped(organizationId,
                 where("timestamp").gte(hourAgo).and("idempotencyOutcome").in(NOTABLE_OUTCOMES)))
@@ -96,9 +98,8 @@ public class PolicyStatsService {
                         event.getRouteId(), event.getIdempotencyOutcome(), event.getTimestamp()))
                 .toList();
 
-        return new IdempotencyStatsResponse(idempotencyTtl.toSeconds(), storedKeys,
-                lastHour.getOrDefault("REPLAYED", 0L), lastHour.getOrDefault("IN_PROGRESS_CONFLICT", 0L),
-                lastHour.getOrDefault("BODY_MISMATCH", 0L), recent);
+        return new IdempotencyStatsResponse(idempotencyTtl.toSeconds(), storedKeys, Stats.number(lastHour, "replays"),
+                Stats.number(lastHour, "conflicts"), Stats.number(lastHour, "mismatches"), recent);
     }
 
     private List<OrganizationDocument> organizations(Long organizationId) {
@@ -108,14 +109,11 @@ public class PolicyStatsService {
         return organizations.stream().filter(OrganizationDocument::isActive).toList();
     }
 
-    // Events per route, keyed "organizationId/routeId"; extraStage narrows the events further (may be null)
-    private Map<String, Long> countByRoute(Document matchStage, Document extraStage) {
-        List<Document> pipeline = new ArrayList<>(List.of(matchStage));
-        if (extraStage != null) {
-            pipeline.add(extraStage);
-        }
-        pipeline.add(new Document("$group", new Document("_id", new Document("organizationId", "$organizationId")
-                .append("routeId", "$routeId")).append("count", new Document("$sum", 1))));
+    // A rollup count summed per route, keyed "organizationId/routeId"
+    private Map<String, Long> sumByRoute(Document matchStage, String field) {
+        List<Document> pipeline = List.of(matchStage, new Document("$group", new Document("_id",
+                new Document("organizationId", "$organizationId").append("routeId", "$routeId"))
+                .append("count", sum(field))));
 
         Map<String, Long> counts = new HashMap<>();
         for (Document row : run(pipeline)) {
@@ -132,8 +130,12 @@ public class PolicyStatsService {
         return organizationId == null ? criteria : criteria.and("organizationId").is(organizationId);
     }
 
+    private static Document first(List<Document> rows) {
+        return rows.isEmpty() ? new Document() : rows.getFirst();
+    }
+
     private List<Document> run(List<Document> pipeline) {
-        return mongoTemplate.getCollection(mongoTemplate.getCollectionName(TrafficEventDocument.class))
+        return mongoTemplate.getCollection(mongoTemplate.getCollectionName(TrafficMinuteDocument.class))
                 .aggregate(pipeline)
                 .into(new ArrayList<>());
     }
