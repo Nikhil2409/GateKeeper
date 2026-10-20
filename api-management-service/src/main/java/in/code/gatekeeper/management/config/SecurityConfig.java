@@ -34,8 +34,6 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import java.security.interfaces.RSAPrivateKey;
-import java.security.interfaces.RSAPublicKey;
 import java.util.List;
 
 /**
@@ -47,17 +45,17 @@ import java.util.List;
 @Configuration
 public class SecurityConfig {
 
-    @Value("${gatekeeper.security.jwt.public-key}")
-    private RSAPublicKey publicKey;
-
-    @Value("${gatekeeper.security.jwt.private-key}")
-    private RSAPrivateKey privateKey;
-
     @Value("${gatekeeper.security.jwt.issuer}")
     private String issuer;
 
     @Value("${gatekeeper.security.cors.allowed-origins}")
     private List<String> allowedOrigins;
+
+    private final JwtKeys jwtKeys;
+
+    public SecurityConfig(JwtKeys jwtKeys) {
+        this.jwtKeys = jwtKeys;
+    }
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -97,7 +95,7 @@ public class SecurityConfig {
                     "Account is inactive or organization is suspended", null));
         };
 
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withPublicKey(publicKey).build();
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withPublicKey(jwtKeys.publicKey()).build();
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuer), accountActive));
         return decoder;
@@ -106,7 +104,7 @@ public class SecurityConfig {
     // The signing key with a key ID (its thumbprint), so tokens carry a "kid" that verifiers match against the JWKS
     @Bean
     public JWKSet signingKeys() throws JOSEException {
-        return new JWKSet(new RSAKey.Builder(publicKey).privateKey(privateKey).keyIDFromThumbprint().build());
+        return new JWKSet(new RSAKey.Builder(jwtKeys.publicKey()).privateKey(jwtKeys.privateKey()).keyIDFromThumbprint().build());
     }
 
     @Bean
