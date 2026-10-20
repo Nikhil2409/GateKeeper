@@ -9,7 +9,7 @@ import java.time.Instant;
  * the gateway can add fields without breaking this service.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record TrafficEventMessage(String requestId, Instant timestamp, String gatewayInstanceId,
+public record TrafficEventMessage(String requestId, String correlationId, Instant timestamp, String gatewayInstanceId,
                                   Long organizationId, String organizationSlug, String routeId,
                                   String method, String path, int status, long latencyMs, String clientIp,
                                   String rejectReason, String idempotencyOutcome, String idempotencyKey) {

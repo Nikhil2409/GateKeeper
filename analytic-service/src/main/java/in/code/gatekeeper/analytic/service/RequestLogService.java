@@ -21,7 +21,7 @@ import static org.springframework.data.mongodb.core.query.Criteria.where;
 
 /**
  * The request log: individual events, newest first, filtered by range, organization, status class (2xx, 4xx, ...)
- * and a free-text search over path, route, client IP and exact status.
+ * and a free-text search over path, route, client IP, exact status and exact request or correlation id.
  */
 @Service
 @RequiredArgsConstructor
@@ -71,7 +71,8 @@ public class RequestLogService {
         }
         String literal = Pattern.quote(search);
         List<Criteria> anyOf = new ArrayList<>(List.of(where("path").regex(literal, "i"),
-                where("routeId").regex(literal, "i"), where("clientIp").regex(literal, "i")));
+                where("routeId").regex(literal, "i"), where("clientIp").regex(literal, "i"),
+                where("_id").is(search), where("correlationId").is(search)));
         if (search.matches("\\d{3}")) {
             anyOf.add(where("status").is(Integer.parseInt(search)));
         }

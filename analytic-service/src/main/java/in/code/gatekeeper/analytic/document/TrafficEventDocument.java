@@ -27,6 +27,9 @@ public class TrafficEventDocument {
     @Id
     private String id;
 
+    @Indexed(name = "correlation_id")
+    private String correlationId;
+
     @Indexed(name = "expire_after_15_days", expireAfter = "15d")
     private Instant timestamp;
 

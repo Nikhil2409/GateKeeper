@@ -5,6 +5,7 @@ import in.code.gatekeeper.analytic.repository.TrafficEventRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
@@ -33,12 +34,18 @@ public class TrafficEventConsumer {
                     record.offset(), e.getMessage());
             return;
         }
-        consume(event);
+        MDC.put("correlationId", event.correlationId());
+        try {
+            consume(event);
+        } finally {
+            MDC.remove("correlationId");
+        }
     }
 
     public void consume(TrafficEventMessage event) {
-        trafficEventRepository.save(new TrafficEventDocument(event.requestId(), event.timestamp(),
-                event.gatewayInstanceId(), event.organizationId(), event.organizationSlug(), event.routeId(),
+        trafficEventRepository.save(new TrafficEventDocument(event.requestId(), event.correlationId(),
+                event.timestamp(), event.gatewayInstanceId(), event.organizationId(), event.organizationSlug(),
+                event.routeId(),
                 event.method(), event.path(), event.status(), event.latencyMs(), event.clientIp(),
                 event.rejectReason(), event.idempotencyOutcome(), event.idempotencyKey()));
     }
