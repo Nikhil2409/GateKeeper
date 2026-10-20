@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpConnectTimeoutException;
@@ -47,18 +48,18 @@ public class UpstreamClient {
 
         try {
             return httpClient.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
-        } catch (HttpConnectTimeoutException e) {
-            log.warn("Connect timeout to {}", target.getHost());
-            throw GatewayException.badGateway("Upstream service is not reachable");
+        } catch (HttpConnectTimeoutException | ConnectException e) {
+            log.warn("Could not connect to {}: {}", target.getHost(), e.toString());
+            throw GatewayException.upstreamUnreachable();
         } catch (HttpTimeoutException e) {
             log.warn("No response from {} within {} ms", target.getHost(), responseTimeoutMs);
             throw GatewayException.gatewayTimeout();
         } catch (IOException e) {
-            log.warn("Upstream call to {} failed: {}", target.getHost(), e.toString());
-            throw GatewayException.badGateway("Upstream service is not reachable");
+            log.warn("Upstream call to {} failed after connecting: {}", target.getHost(), e.toString());
+            throw GatewayException.upstreamFailed();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw GatewayException.badGateway("Upstream call was interrupted");
+            throw GatewayException.upstreamFailed();
         }
     }
 }

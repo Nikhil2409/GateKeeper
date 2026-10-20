@@ -9,7 +9,6 @@ import in.code.gatekeeper.gateway.check.RequestGuard;
 import in.code.gatekeeper.gateway.check.RequestGuard.PublicPath;
 import in.code.gatekeeper.gateway.check.TokenCheck;
 import in.code.gatekeeper.gateway.check.UpstreamTargetGuard;
-import in.code.gatekeeper.gateway.client.UpstreamClient;
 import in.code.gatekeeper.gateway.exception.GatewayException;
 import in.code.gatekeeper.gateway.filter.TrafficEventFilter;
 import in.code.gatekeeper.gateway.model.RouteConfig;
@@ -17,6 +16,7 @@ import in.code.gatekeeper.gateway.registry.OrgRoutes;
 import in.code.gatekeeper.gateway.util.ResponseWriter;
 import in.code.gatekeeper.gateway.util.RouteResolver;
 import in.code.gatekeeper.gateway.util.RouteResolver.ResolvedRoute;
+import in.code.gatekeeper.gateway.util.UpstreamCaller;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -27,11 +27,6 @@ import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpResponse;
 
-/**
- * The pipeline of one tenant request, step by step. The logic of every step lives in its own class (check/, util/,
- * client/); this service only decides the order. Any step can stop the request by throwing a GatewayException,
- * which GatewayExceptionHandler turns into the error response.
- */
 @Service
 @RequiredArgsConstructor
 public class ProxyService {
@@ -44,27 +39,23 @@ public class ProxyService {
     private final UpstreamTargetGuard upstreamTargetGuard;
     private final IdempotencyCheck idempotencyCheck;
     private final HeaderFilter headerFilter;
-    private final UpstreamClient upstreamClient;
+    private final UpstreamCaller upstreamCaller;
     private final ResponseWriter responseWriter;
 
     public void forward(HttpServletRequest request, HttpServletResponse response) throws IOException {
         String requestId = (String) request.getAttribute(TrafficEventFilter.REQUEST_ID);
 
-        // 1. what is this request for (404 / 405 otherwise)
         PublicPath path = requestGuard.parsePath(request.getRequestURI(), request.getQueryString());
         ResolvedRoute resolved = routeResolver.resolve(path, request);
         OrgRoutes organization = resolved.organization();
         RouteConfig route = resolved.route();
 
-        // 2. who is calling: before the body is read, so unauthenticated callers can't make the gateway buffer 1 MB
         String userId = tokenCheck.check(organization, request);
         byte[] body = requestGuard.readBody(request);
 
-        // 3. limits
         quotaCheck.check(organization, route, userId);
         rateLimitCheck.check(organization, route);
 
-        // 4. where it goes, and whether this exact write already ran
         URI target = upstreamTargetGuard.resolve(route, path);
         Ticket ticket = idempotencyCheck.start(organization, route, userId, request, body);
         if (ticket != null && ticket.replay() != null) {
@@ -72,14 +63,16 @@ public class ProxyService {
             return;
         }
 
-        // 5. forward and answer
         HttpResponse<InputStream> upstream;
         try {
-            upstream = upstreamClient.send(request.getMethod(), target,
-                    headerFilter.requestHeaders(request, route, requestId, userId), body, route.responseTimeoutMs());
+            upstream = upstreamCaller.call(organization, route, request.getMethod(), target,
+                    headerFilter.requestHeaders(request, route, requestId, userId), body, ticket != null);
         } catch (GatewayException e) {
-            idempotencyCheck.upstreamFailed(ticket, e);
-            throw e;
+            if (ticket == null) {
+                throw e;
+            }
+            idempotencyCheck.upstreamFailed(ticket);
+            throw e.withSafeRetryHint();
         }
         responseWriter.writeUpstream(response, upstream, route, ticket);
     }

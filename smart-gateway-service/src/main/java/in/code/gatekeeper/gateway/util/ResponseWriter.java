@@ -27,11 +27,7 @@ public class ResponseWriter {
     private final HeaderFilter headerFilter;
     private final IdempotencyCheck idempotencyCheck;
 
-    /**
-     * ticket: the idempotency ticket of this request, or null when the check did not apply. With a ticket the body is
-     * buffered up to the limit so it can be stored for replays; 5xx and oversized responses are not stored (the key
-     * is released, so a retry runs again).
-     */
+
     public void writeUpstream(HttpServletResponse response, HttpResponse<InputStream> upstream, RouteConfig route,
                               Ticket ticket) throws IOException {
         Map<String, List<String>> headers = headerFilter.responseHeaders(upstream.headers(), route);

@@ -25,6 +25,7 @@ import java.util.Set;
 public class HeaderFilter {
 
     public static final String REQUEST_ID = "x-request-id";
+    private static final String IDEMPOTENCY_KEY = "idempotency-key";
     public static final String USER_ID = "x-user-id";
 
     private static final Set<String> ALWAYS_FORWARDED = Set.of("content-type", "accept");
@@ -42,7 +43,9 @@ public class HeaderFilter {
         Map<String, List<String>> headers = new LinkedHashMap<>();
         for (String name : Collections.list(request.getHeaderNames())) {
             String lower = name.toLowerCase(Locale.ROOT);
-            boolean allowed = route.allowedHeaders().contains(lower) || ALWAYS_FORWARDED.contains(lower);
+            // an idempotent route's backend dedupes on the key, so it always gets it
+            boolean allowed = route.allowedHeaders().contains(lower) || ALWAYS_FORWARDED.contains(lower)
+                    || (route.idempotencyEnabled() && lower.equals(IDEMPOTENCY_KEY));
             if (allowed && !HOP_BY_HOP.contains(lower) && !GATEWAY_MANAGED.contains(lower)) {
                 headers.put(lower, new ArrayList<>(Collections.list(request.getHeaders(name))));
             }

@@ -28,9 +28,6 @@ public class RequestGuard {
         this.maxBodyBytes = maxBodyBytes;
     }
 
-    /**
-     * /{slug}/orders/42 -> slug "acme", segments ["orders", "42"], path "/orders/42" (raw), rawQuery as received.
-     */
     public record PublicPath(String slug, List<String> segments, String path, String rawQuery) {
     }
 
@@ -40,7 +37,7 @@ public class RequestGuard {
         }
         List<String> segments = Arrays.asList(rawPath.substring(1).split("/", -1));
         if (segments.size() < 2) {
-            throw GatewayException.notFound();   // only a slug: no route can match
+            throw GatewayException.notFound();
         }
         segments.forEach(RequestGuard::checkSegment);
         List<String> routeSegments = segments.subList(1, segments.size());
@@ -48,7 +45,6 @@ public class RequestGuard {
                 "/" + String.join("/", routeSegments), rawQuery);
     }
 
-    // Reads the whole body, refusing anything above the limit (also when Content-Length was missing or wrong)
     public byte[] readBody(HttpServletRequest request) throws IOException {
         if (request.getContentLengthLong() > maxBodyBytes) {
             throw GatewayException.payloadTooLarge(maxBodyBytes);
@@ -68,7 +64,6 @@ public class RequestGuard {
         }
         String decoded;
         try {
-            // "+" is a literal plus in a path, not a space
             decoded = URLDecoder.decode(rawSegment.replace("+", "%2B"), StandardCharsets.UTF_8);
         } catch (IllegalArgumentException e) {
             throw GatewayException.badRequest("Invalid percent-encoding in path");

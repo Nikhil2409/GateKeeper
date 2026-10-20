@@ -7,6 +7,7 @@ import in.code.gatekeeper.gateway.dto.StatusResponse;
 import in.code.gatekeeper.gateway.dto.StatusResponse.OrganizationStatus;
 import in.code.gatekeeper.gateway.registry.OrgRoutes;
 import in.code.gatekeeper.gateway.registry.RouteRegistry;
+import in.code.gatekeeper.gateway.util.UpstreamCaller;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -24,6 +25,7 @@ public class GatewayStatusService {
     private final RouteRegistry routeRegistry;
     private final RedisStatus redisStatus;
     private final OrgConfigConsumer orgConfigConsumer;
+    private final UpstreamCaller upstreamCaller;
 
     @Value("${gateway.instance-id}")
     private String instanceId;
@@ -39,7 +41,8 @@ public class GatewayStatusService {
     public StatusResponse status() {
         List<OrganizationStatus> organizations = routeRegistry.all().stream()
                 .sorted(Comparator.comparing(OrgRoutes::slug))
-                .map(OrganizationStatus::from)
+                .map(organization -> OrganizationStatus.from(organization,
+                        upstreamCaller.openCircuits(organization.organizationId())))
                 .toList();
         return new StatusResponse(instanceId, routeRegistry.isReady(), routeRegistry.lastUpdateAt(), organizations);
     }

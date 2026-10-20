@@ -15,6 +15,9 @@ import java.util.TreeSet;
 @Getter
 public class GatewayException extends RuntimeException {
 
+    private static final String UPSTREAM_UNREACHABLE = "UPSTREAM_UNREACHABLE";
+    private static final String CIRCUIT_OPEN = "CIRCUIT_OPEN";
+
     private final HttpStatus status;
     private final HttpHeaders headers;
     private final String reason;
@@ -59,9 +62,9 @@ public class GatewayException extends RuntimeException {
         return new GatewayException(HttpStatus.CONTENT_TOO_LARGE, "Request body is larger than " + maxBytes + " bytes");
     }
 
-    public static GatewayException conflict(String message) {
+    public static GatewayException conflict(String message, long retryAfterSeconds) {
         HttpHeaders headers = new HttpHeaders();
-        headers.set(HttpHeaders.RETRY_AFTER, "1");
+        headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(Math.max(1, retryAfterSeconds)));
         return new GatewayException(HttpStatus.CONFLICT, message, headers);
     }
 
@@ -84,7 +87,37 @@ public class GatewayException extends RuntimeException {
         return new GatewayException(HttpStatus.BAD_GATEWAY, message);
     }
 
+    // The connection was never made, so the upstream provably did not see the request
+    public static GatewayException upstreamUnreachable() {
+        return new GatewayException(HttpStatus.BAD_GATEWAY, UPSTREAM_UNREACHABLE, "Upstream service is not reachable",
+                new HttpHeaders());
+    }
+
+    // The connection broke after the request went out: the upstream may have run it
+    public static GatewayException upstreamFailed() {
+        return new GatewayException(HttpStatus.BAD_GATEWAY, "UPSTREAM_FAILED", "Upstream service failed to answer",
+                new HttpHeaders());
+    }
+
     public static GatewayException gatewayTimeout() {
         return new GatewayException(HttpStatus.GATEWAY_TIMEOUT, "Upstream service did not respond in time");
+    }
+
+    public static GatewayException circuitOpen(long retryAfterSeconds) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
+        return new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, CIRCUIT_OPEN,
+                "Upstream service is failing, try again later", headers);
+    }
+
+    // Same failure, telling the caller a retry with the same key is safe (the backend dedupes on it)
+    public GatewayException withSafeRetryHint() {
+        return new GatewayException(status, reason, getMessage() + ". It is safe to retry with the same Idempotency-Key",
+                headers);
+    }
+
+    // Nothing reached the upstream
+    public boolean isNotSent() {
+        return UPSTREAM_UNREACHABLE.equals(reason) || CIRCUIT_OPEN.equals(reason);
     }
 }

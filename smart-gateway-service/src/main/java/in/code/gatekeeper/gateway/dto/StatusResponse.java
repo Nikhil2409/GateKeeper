@@ -9,12 +9,14 @@ import java.util.List;
 public record StatusResponse(String instanceId, boolean ready, Instant lastUpdateAt,
                              List<OrganizationStatus> organizations) {
 
+    // openCircuits: route ids whose circuit breaker is open or probing on this instance
     public record OrganizationStatus(String slug, long version, String status, int routes,
-                                     boolean tokenSettingsConfigured, Instant loadedAt) {
+                                     boolean tokenSettingsConfigured, Instant loadedAt, List<String> openCircuits) {
 
-        public static OrganizationStatus from(OrgRoutes organization) {
+        public static OrganizationStatus from(OrgRoutes organization, List<String> openCircuits) {
             return new OrganizationStatus(organization.slug(), organization.version(), organization.status(),
-                    organization.routes().size(), organization.tokenSettings() != null, organization.loadedAt());
+                    organization.routes().size(), organization.tokenSettings() != null, organization.loadedAt(),
+                    openCircuits);
         }
     }
 }
