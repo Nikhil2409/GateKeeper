@@ -1,5 +1,6 @@
 package in.code.gatekeeper.gateway.check;
 
+import in.code.gatekeeper.gateway.filter.TrafficEventFilter;
 import in.code.gatekeeper.gateway.model.HeaderRule;
 import in.code.gatekeeper.gateway.model.RouteConfig;
 import jakarta.servlet.http.HttpServletRequest;
@@ -25,6 +26,7 @@ import java.util.Set;
 public class HeaderFilter {
 
     public static final String REQUEST_ID = "x-request-id";
+    public static final String CORRELATION_ID = "x-correlation-id";
     private static final String IDEMPOTENCY_KEY = "idempotency-key";
     public static final String USER_ID = "x-user-id";
 
@@ -36,7 +38,7 @@ public class HeaderFilter {
 
     // Set by the JDK HTTP client itself (it refuses them) or by the gateway; tenant rules can't touch these either
     private static final Set<String> GATEWAY_MANAGED = Set.of("host", "content-length", "expect",
-            "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", REQUEST_ID, USER_ID);
+            "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", REQUEST_ID, CORRELATION_ID, USER_ID);
 
     public Map<String, List<String>> requestHeaders(HttpServletRequest request, RouteConfig route, String requestId,
                                                     String userId) {
@@ -59,6 +61,7 @@ public class HeaderFilter {
             headers.put("x-forwarded-host", List.of(request.getHeader("host")));
         }
         headers.put(REQUEST_ID, List.of(requestId));
+        headers.put(CORRELATION_ID, List.of((String) request.getAttribute(TrafficEventFilter.CORRELATION_ID)));
         headers.put(USER_ID, List.of(userId));
         return headers;
     }
@@ -68,7 +71,7 @@ public class HeaderFilter {
         upstream.map().forEach((name, values) -> {
             String lower = name.toLowerCase(Locale.ROOT);
             // ":status" is an HTTP/2 pseudo-header the JDK client may expose
-            if (!HOP_BY_HOP.contains(lower) && !lower.startsWith(":") && !lower.equals(REQUEST_ID)) {
+            if (!HOP_BY_HOP.contains(lower) && !lower.startsWith(":") && !lower.equals(REQUEST_ID) && !lower.equals(CORRELATION_ID)) {
                 headers.put(lower, new ArrayList<>(values));
             }
         });

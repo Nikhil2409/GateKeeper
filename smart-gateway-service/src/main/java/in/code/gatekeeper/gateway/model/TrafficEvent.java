@@ -12,8 +12,9 @@ import java.time.Instant;
  *   e.g. NOT_FOUND, UNAUTHORIZED, RATE_LIMITED, QUOTA_EXCEEDED, BAD_GATEWAY, GATEWAY_TIMEOUT.
  * idempotencyOutcome: null when the check did not apply; EXECUTED, REPLAYED, IN_PROGRESS_CONFLICT or BODY_MISMATCH.
  * idempotencyKey: masked (first and last 4 characters), never the full key.
+ * correlationId: the caller's X-Correlation-Id, or the request id when it sent none.
  */
-public record TrafficEvent(String requestId, Instant timestamp, String gatewayInstanceId,
+public record TrafficEvent(String requestId, String correlationId, Instant timestamp, String gatewayInstanceId,
                            Long organizationId, String organizationSlug, String routeId,
                            String method, String path, int status, long latencyMs, String clientIp,
                            String rejectReason, String idempotencyOutcome, String idempotencyKey) {

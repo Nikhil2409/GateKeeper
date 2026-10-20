@@ -1,5 +1,6 @@
 package in.code.gatekeeper.gateway.client;
 
+import in.code.gatekeeper.gateway.filter.TrafficEventFilter;
 import in.code.gatekeeper.gateway.model.OrganizationConfig;
 import in.code.gatekeeper.gateway.registry.RouteRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -9,6 +10,7 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
@@ -156,6 +158,7 @@ public class OrgConfigConsumer implements SmartLifecycle {
         }
         try {
             OrganizationConfig config = jsonMapper.readValue(record.value(), OrganizationConfig.class);
+            MDC.put(TrafficEventFilter.MDC_CORRELATION_ID, config.correlationId());
             if (routeRegistry.apply(config)) {
                 log.info("Applied configuration of {} version {} ({}, {} routes)", config.organizationSlug(),
                         config.configurationVersion(), config.status(), config.routes().size());
@@ -163,6 +166,8 @@ public class OrgConfigConsumer implements SmartLifecycle {
         } catch (JacksonException | IllegalArgumentException e) {
             log.warn("Skipping unreadable message {}-{}@{}: {}", record.topic(), record.partition(), record.offset(),
                     e.getMessage());
+        } finally {
+            MDC.remove(TrafficEventFilter.MDC_CORRELATION_ID);
         }
     }
 
