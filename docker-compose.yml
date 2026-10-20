@@ -280,12 +280,12 @@ services:
       api-management-service: { condition: service_healthy }
     restart: unless-stopped
 
-  # ---------- the two UIs (sources from GATEKEEPER_UI_DIR, default ../GateKeeper-UI) ----------
+  # ---------- the two UIs (sources in ui/) ----------
   management-ui:
     build:
       context: ./docker/ui
       additional_contexts:
-        app: ${GATEKEEPER_UI_DIR:-../GateKeeper-UI}/api-management-ui
+        app: ./ui/api-management-ui
       args:
         VITE_API_BASE_URL: http://localhost:8081
         VITE_GATEWAY_URL: http://localhost:8080
@@ -301,7 +301,7 @@ services:
     build:
       context: ./docker/ui
       additional_contexts:
-        app: ${GATEKEEPER_UI_DIR:-../GateKeeper-UI}/analytics-ui
+        app: ./ui/analytics-ui
       args:
         VITE_AUTH_API_URL: http://localhost:8081
         VITE_SERVICE_API_URL: http://localhost:8082

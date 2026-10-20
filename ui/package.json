@@ -1,0 +1,12 @@
+{
+  "name": "gatekeeper-ui",
+  "private": true,
+  "description": "Starts all Gatekeeper frontends together",
+  "scripts": {
+    "setup": "npm install && npm --prefix api-management-ui install && npm --prefix analytics-ui install",
+    "dev": "concurrently --kill-others-on-fail --names api-mgmt,analytics --prefix-colors blue,green \"npm --prefix api-management-ui run dev\" \"npm --prefix analytics-ui run dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}
