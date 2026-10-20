@@ -1,0 +1,48 @@
+# Load-test additions, layered over the main file; nothing here is part of the product:
+#   docker compose -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml ...
+# (loadtest/run.ps1 does this for you)
+#
+# loadtest-idp: the test tenant's identity provider. Generates an RSA key once, then on every start writes its JWKS
+#               (served by WireMock at http://wiremock:8080/loadtest-idp/jwks.json) and fresh user tokens for k6.
+# k6:           runs the scripts in loadtest/k6 from inside both networks; results go to loadtest/results.
+#               The test tenant's traffic shows up in the normal dashboards like any tenant's.
+
+services:
+  loadtest-idp:
+    image: node:22-alpine
+    container_name: gatekeeper-loadtest-idp
+    command: ["node", "/generate.mjs"]
+    volumes:
+      - ./loadtest/idp/generate.mjs:/generate.mjs:ro
+      - loadtest-idp:/idp
+      - loadtest-wiremock-files:/wiremock-files
+    network_mode: none
+
+  # WireMock serves files from __files as static content: the JWKS and the /limited response
+  wiremock:
+    volumes:
+      - loadtest-wiremock-files:/home/wiremock/__files:ro
+    depends_on:
+      loadtest-idp: { condition: service_completed_successfully }
+
+  k6:
+    image: grafana/k6:0.54.0
+    container_name: gatekeeper-k6
+    profiles: ["loadtest"]
+    mem_limit: 768m
+    environment:
+      MGMT_URL: http://api-management-service:8081
+      GATEWAY_URL: http://nginx:8080
+      DIRECT_URL: http://wiremock:8080
+      # the Docker stack's platform admin (its default password); own names, so a local .env can't override them
+      PLATFORM_ADMIN_USERNAME: ${LOADTEST_ADMIN_USERNAME:-platform-admin}
+      PLATFORM_ADMIN_PASSWORD: ${LOADTEST_ADMIN_PASSWORD:-admin-pass-123}
+    volumes:
+      - ./loadtest/k6:/scripts:ro
+      - ./loadtest/results:/results
+      - loadtest-idp:/idp:ro
+    networks: [platform, tenants]
+
+volumes:
+  loadtest-idp:
+  loadtest-wiremock-files:

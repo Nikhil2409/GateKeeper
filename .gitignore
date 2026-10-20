@@ -46,3 +46,6 @@ HELP.md
 **/dist/
 **/nbdist/
 **/.nb-gradle/
+
+# Load-test output
+loadtest/results/
