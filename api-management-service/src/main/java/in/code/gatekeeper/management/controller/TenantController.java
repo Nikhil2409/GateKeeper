@@ -3,6 +3,9 @@ package in.code.gatekeeper.management.controller;
 import in.code.gatekeeper.management.aop.RequiredRole;
 import in.code.gatekeeper.management.dto.requestDto.RouteRequest;
 import in.code.gatekeeper.management.dto.requestDto.TokenSettingsRequest;
+import in.code.gatekeeper.management.dto.responseDto.ConfigPreviewResponse;
+import in.code.gatekeeper.management.dto.responseDto.ConfigVersionResponse;
+import in.code.gatekeeper.management.dto.responseDto.RollbackResponse;
 import in.code.gatekeeper.management.dto.responseDto.RouteResponse;
 import in.code.gatekeeper.management.dto.responseDto.TokenSettingsResponse;
 import in.code.gatekeeper.management.enums.RoleName;
@@ -46,6 +49,23 @@ public class TenantController {
     public ResponseEntity<TokenSettingsResponse> saveTokenSettings(@AuthenticationPrincipal Jwt jwt,
                                                                    @Valid @RequestBody TokenSettingsRequest request) {
         return ResponseEntity.ok(tenantService.saveTokenSettings(AuthService.organizationIdOf(jwt), request));
+    }
+
+    @GetMapping("/configuration/versions")
+    public ResponseEntity<List<ConfigVersionResponse>> configurationVersions(@AuthenticationPrincipal Jwt jwt) {
+        return ResponseEntity.ok(tenantService.configurationVersions(AuthService.organizationIdOf(jwt)));
+    }
+
+    // The version in full and what rolling back to it would change
+    @GetMapping("/configuration/versions/{version}")
+    public ResponseEntity<ConfigPreviewResponse> previewVersion(@AuthenticationPrincipal Jwt jwt,
+                                                                @PathVariable long version) {
+        return ResponseEntity.ok(tenantService.previewVersion(AuthService.organizationIdOf(jwt), version));
+    }
+
+    @PostMapping("/configuration/versions/{version}/rollback")
+    public ResponseEntity<RollbackResponse> rollback(@AuthenticationPrincipal Jwt jwt, @PathVariable long version) {
+        return ResponseEntity.ok(tenantService.rollback(AuthService.organizationIdOf(jwt), version));
     }
 
     @GetMapping("/routes")

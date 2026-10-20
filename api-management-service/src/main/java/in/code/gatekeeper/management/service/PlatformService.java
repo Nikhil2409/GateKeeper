@@ -1,6 +1,5 @@
 package in.code.gatekeeper.management.service;
 
-import in.code.gatekeeper.management.config.CorrelationIdFilter;
 import in.code.gatekeeper.management.dto.requestDto.OrganizationRequest;
 import in.code.gatekeeper.management.dto.requestDto.PasswordResetRequest;
 import in.code.gatekeeper.management.dto.requestDto.TenantAdminRequest;
@@ -9,6 +8,7 @@ import in.code.gatekeeper.management.dto.responseDto.TenantAdminResponse;
 import in.code.gatekeeper.management.entity.ManagementUser;
 import in.code.gatekeeper.management.entity.Organization;
 import in.code.gatekeeper.management.entity.Role;
+import in.code.gatekeeper.management.enums.ConfigChangeType;
 import in.code.gatekeeper.management.enums.OrganizationStatus;
 import in.code.gatekeeper.management.enums.RoleName;
 import in.code.gatekeeper.management.exception.ApiException;
@@ -16,8 +16,8 @@ import in.code.gatekeeper.management.kafka.OrganizationConfigChangedEvent;
 import in.code.gatekeeper.management.repository.ManagementUserRepository;
 import in.code.gatekeeper.management.repository.OrganizationRepository;
 import in.code.gatekeeper.management.repository.RoleRepository;
+import in.code.gatekeeper.management.util.RequestContext;
 import lombok.RequiredArgsConstructor;
-import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -48,7 +48,7 @@ public class PlatformService {
         }
         Organization organization = organizationRepository.save(new Organization(name, request.slug()));
         // A new organization is a configuration change too (version 1): gateways and analytics know it right away
-        bumpVersion(organization);
+        bumpVersion(organization, ConfigChangeType.ORGANIZATION_CREATED, null);
         return OrganizationResponse.from(organization);
     }
 
@@ -72,7 +72,8 @@ public class PlatformService {
                 .orElseThrow(() -> ApiException.notFound("Organization " + id + " not found"));
         if (organization.getStatus() != status) {
             organization.setStatus(status);
-            bumpVersion(organization);
+            bumpVersion(organization, status == OrganizationStatus.SUSPENDED
+                    ? ConfigChangeType.ORGANIZATION_SUSPENDED : ConfigChangeType.ORGANIZATION_ACTIVATED, null);
         }
         return OrganizationResponse.from(organizationRepository.saveAndFlush(organization));
     }
@@ -118,11 +119,11 @@ public class PlatformService {
         findTenantAdmin(id).setActive(false);
     }
 
-    // The version bump and the change event always go together; the event is handled after commit
-    private void bumpVersion(Organization organization) {
+    // The version bump and the change event always go together; the event is handled before/after commit
+    private void bumpVersion(Organization organization, ConfigChangeType changeType, String detail) {
         organization.incrementVersion();
-        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId(),
-                MDC.get(CorrelationIdFilter.MDC_KEY)));
+        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId(), changeType, detail,
+                RequestContext.username(), RequestContext.correlationId()));
     }
 
     private Organization findOrganization(Long id) {

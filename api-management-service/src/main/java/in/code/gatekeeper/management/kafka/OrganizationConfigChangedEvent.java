@@ -1,9 +1,12 @@
 package in.code.gatekeeper.management.kafka;
 
+import in.code.gatekeeper.management.enums.ConfigChangeType;
+
 /**
  * Raised in memory (Spring application event) by TenantService and PlatformService whenever an organization's
- * configuration version is bumped. OrgConfigChangePublisher turns it into a Kafka message once the change commits.
- * correlationId: the id of the admin request that made the change, carried into the message.
+ * configuration version is bumped. Before the change commits, OrgConfigChangePublisher builds the Kafka message
+ * and ConfigHistoryService records the version for rollback.
  */
-public record OrganizationConfigChangedEvent(Long organizationId, String correlationId) {
+public record OrganizationConfigChangedEvent(Long organizationId, ConfigChangeType changeType, String changeDetail,
+                                             String changedBy, String correlationId) {
 }

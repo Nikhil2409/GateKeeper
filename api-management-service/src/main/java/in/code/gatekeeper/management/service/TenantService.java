@@ -1,23 +1,28 @@
 package in.code.gatekeeper.management.service;
 
-import in.code.gatekeeper.management.config.CorrelationIdFilter;
+import in.code.gatekeeper.management.dto.ConfigSnapshot;
+import in.code.gatekeeper.management.dto.ConfigSnapshot.RouteSnapshot;
 import in.code.gatekeeper.management.dto.requestDto.HeaderRuleRequest;
 import in.code.gatekeeper.management.dto.requestDto.RouteRequest;
 import in.code.gatekeeper.management.dto.requestDto.TokenSettingsRequest;
+import in.code.gatekeeper.management.dto.responseDto.ConfigPreviewResponse;
+import in.code.gatekeeper.management.dto.responseDto.ConfigVersionResponse;
+import in.code.gatekeeper.management.dto.responseDto.RollbackResponse;
 import in.code.gatekeeper.management.dto.responseDto.RouteResponse;
 import in.code.gatekeeper.management.dto.responseDto.TokenSettingsResponse;
 import in.code.gatekeeper.management.entity.ApiRoute;
 import in.code.gatekeeper.management.entity.Organization;
 import in.code.gatekeeper.management.entity.OrganizationTokenSettings;
 import in.code.gatekeeper.management.entity.RouteHeaderRule;
+import in.code.gatekeeper.management.enums.ConfigChangeType;
 import in.code.gatekeeper.management.enums.HeaderAction;
 import in.code.gatekeeper.management.exception.ApiException;
 import in.code.gatekeeper.management.kafka.OrganizationConfigChangedEvent;
 import in.code.gatekeeper.management.repository.ApiRouteRepository;
 import in.code.gatekeeper.management.repository.OrganizationRepository;
 import in.code.gatekeeper.management.repository.OrganizationTokenSettingsRepository;
+import in.code.gatekeeper.management.util.RequestContext;
 import lombok.RequiredArgsConstructor;
-import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,7 +31,10 @@ import org.springframework.util.StringUtils;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -43,6 +51,7 @@ public class TenantService {
     private final OrganizationTokenSettingsRepository tokenSettingsRepository;
     private final UpstreamTargetPolicy upstreamTargetPolicy;
     private final ApplicationEventPublisher eventPublisher;
+    private final ConfigHistoryService configHistoryService;
 
     // Set by the gateway itself (or hop-by-hop), so a tenant can never allowlist them
     private static final Set<String> GATEWAY_MANAGED_HEADERS = Set.of(
@@ -74,7 +83,7 @@ public class TenantService {
         settings.setJwksUri(request.jwksUri().trim());
         settings.setAudience(request.audience().trim());
         settings.setActive(true);
-        bumpVersion(organization);
+        bumpVersion(organization, ConfigChangeType.TOKEN_SETTINGS_SAVED, null);
         return TokenSettingsResponse.from(tokenSettingsRepository.save(settings));
     }
 
@@ -101,7 +110,7 @@ public class TenantService {
 
         ApiRoute route = new ApiRoute(organization, request.routeId());
         apply(route, request);
-        bumpVersion(organization);
+        bumpVersion(organization, ConfigChangeType.ROUTE_CREATED, request.routeId());
         return RouteResponse.from(apiRouteRepository.save(route));
     }
 
@@ -114,7 +123,7 @@ public class TenantService {
         checkPathTemplate(organizationId, routeId, request.pathPattern());
 
         apply(route, request);
-        bumpVersion(organization);
+        bumpVersion(organization, ConfigChangeType.ROUTE_UPDATED, routeId);
         return RouteResponse.from(apiRouteRepository.saveAndFlush(route));
     }
 
@@ -123,10 +132,65 @@ public class TenantService {
         ApiRoute route = findRoute(organizationId, routeId);
         if (route.isActive() != active) {
             route.setActive(active);
-            bumpVersion(organization);
+            bumpVersion(organization,
+                    active ? ConfigChangeType.ROUTE_ACTIVATED : ConfigChangeType.ROUTE_DEACTIVATED, routeId);
             apiRouteRepository.saveAndFlush(route);
         }
         return RouteResponse.from(route);
+    }
+
+    // ---------- configuration history and rollback ----------
+
+    public List<ConfigVersionResponse> configurationVersions(Long organizationId) {
+        return configHistoryService.versions(organizationId);
+    }
+
+    public ConfigPreviewResponse previewVersion(Long organizationId, long version) {
+        return configHistoryService.preview(organizationId, version);
+    }
+
+    // Re-applies a kept version as a new change: history stays append-only and the result goes through the
+    // same checks as a normal save. Organization status is the platform admin's and is never touched.
+    public RollbackResponse rollback(Long organizationId, long version) {
+        Organization organization = lockOrganization(organizationId);
+        ConfigSnapshot snapshot = configHistoryService.snapshotToRestore(organizationId, version);
+        restoreTokenSettings(organization, snapshot.tokenSettings());
+        restoreRoutes(organization, snapshot.routes());
+        bumpVersion(organization, ConfigChangeType.ROLLED_BACK, "to version " + version);
+        return new RollbackResponse(version, organization.getConfigurationVersion(), snapshot.activeRoutes(),
+                snapshot.tokenSettings() != null);
+    }
+
+    private void restoreTokenSettings(Organization organization, TokenSettingsRequest saved) {
+        Optional<OrganizationTokenSettings> current = tokenSettingsRepository.findByOrganizationId(organization.getId());
+        if (saved == null) {
+            current.ifPresent(settings -> settings.setActive(false));
+            return;
+        }
+        OrganizationTokenSettings settings = current.orElseGet(() -> new OrganizationTokenSettings(organization));
+        settings.setIssuer(saved.issuer());
+        settings.setJwksUri(saved.jwksUri());
+        settings.setAudience(saved.audience());
+        settings.setActive(true);
+        tokenSettingsRepository.save(settings);
+    }
+
+    // Routes created after that version are switched off; routes are never hard deleted, so all others still exist
+    private void restoreRoutes(Organization organization, List<RouteSnapshot> saved) {
+        Map<String, ApiRoute> existing = apiRouteRepository.findAllByOrganizationIdOrderByRouteId(organization.getId())
+                .stream().collect(Collectors.toMap(ApiRoute::getRouteId, Function.identity()));
+        Set<String> restored = saved.stream().map(route -> route.route().routeId()).collect(Collectors.toSet());
+        existing.values().stream()
+                .filter(route -> !restored.contains(route.getRouteId()))
+                .forEach(route -> route.setActive(false));
+        for (RouteSnapshot routeSnapshot : saved) {
+            RouteRequest request = routeSnapshot.route();
+            checkPathTemplate(organization.getId(), request.routeId(), request.pathPattern());
+            ApiRoute route = existing.computeIfAbsent(request.routeId(), routeId -> new ApiRoute(organization, routeId));
+            apply(route, request);
+            route.setActive(routeSnapshot.active());
+            apiRouteRepository.save(route);
+        }
     }
 
     // Taken first by every write, so changes inside one organization are serialized and versioned in order
@@ -135,11 +199,11 @@ public class TenantService {
                 .orElseThrow(() -> ApiException.notFound("Organization " + organizationId + " not found"));
     }
 
-    // The version bump and the change event always go together; the event is handled after commit
-    private void bumpVersion(Organization organization) {
+    // The version bump and the change event always go together; the event is handled before/after commit
+    private void bumpVersion(Organization organization, ConfigChangeType changeType, String detail) {
         organization.incrementVersion();
-        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId(),
-                MDC.get(CorrelationIdFilter.MDC_KEY)));
+        eventPublisher.publishEvent(new OrganizationConfigChangedEvent(organization.getId(), changeType, detail,
+                RequestContext.username(), RequestContext.correlationId()));
     }
 
     private ApiRoute findRoute(Long organizationId, String routeId) {
