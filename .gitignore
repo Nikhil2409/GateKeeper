@@ -49,3 +49,4 @@ HELP.md
 
 # Load-test output
 loadtest/results/
+.DS_Store
