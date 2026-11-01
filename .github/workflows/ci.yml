@@ -10,7 +10,8 @@ on:
 jobs:
   service-tests:
     name: ${{ matrix.service }}
-    runs-on: ubuntu-latest
+    # MongoDB 8.0 refuses to start on Linux kernel 6.19 and newer (SERVER-121912), which ubuntu-latest now has
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
