@@ -25,6 +25,7 @@ import java.time.Instant;
 @Document("traffic_events")
 @CompoundIndex(name = "org_time", def = "{'organizationId': 1, 'timestamp': -1}")
 @CompoundIndex(name = "outcome_time", def = "{'idempotencyOutcome': 1, 'timestamp': -1}")
+@CompoundIndex(name = "status_time", def = "{'status': 1, 'timestamp': -1}")
 public class TrafficEventDocument {
 
     @Id
