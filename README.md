@@ -328,46 +328,53 @@ describing the computer. The test companies' traffic also shows up in the Analyt
 
 ### Results
 
-> **⚠ These numbers depend on the machine.** They were measured on one laptop: AMD Ryzen 5 5600H (6 cores),
-> 7.3 GB RAM, Windows 11, with Docker allowed 3.5 GB. The test tool and the whole system shared that laptop, and it
-> was short on memory. Expect better throughput and response times on a bigger machine. The functional outcomes
-> below (limit accuracy, errors, behaviour during outages) were observed in these test runs, but results may vary
-> with hardware, timing and resource contention. The measurements have not yet been reproduced on a larger
-> machine.
+> **⚠ These numbers depend on the machine.** They were measured on two computers, shown side by side:
+> - **Windows laptop:** AMD Ryzen 5 5600H (6 cores), 7.3 GB RAM, Windows 11, with Docker allowed 3.5 GB. The test
+>   tool and the whole system shared that laptop, and it was short on memory.
+> - **Mac:** Apple M5 (10 cores), 16 GB RAM, macOS 26.5, with Docker allowed 7.7 GB and 10 CPUs. Here too the test
+>   tool and the whole system shared the one machine.
+>
+> Expect better throughput and response times on a bigger machine, as the Mac shows. The functional outcomes below
+> (limit accuracy, errors, behaviour during outages) were observed in these test runs, but results may vary with
+> hardware, timing and resource contention.
 
 **How much time the gateway adds** (300 requests per second, no errors)
 
 | | half of requests faster than | 95% faster than | 99% faster than |
 |---|---|---|---|
-| Straight to the server | 0.4 ms | 0.7 ms | 2.1 ms |
-| Through the gateway | **2.5 ms** | **4.2 ms** | **6.3 ms** |
+| Straight to the server, Windows laptop | 0.4 ms | 0.7 ms | 2.1 ms |
+| Straight to the server, Mac | 0.21 ms | 0.56 ms | 0.96 ms |
+| Through the gateway, Windows laptop | **2.5 ms** | **4.2 ms** | **6.3 ms** |
+| Through the gateway, Mac | **0.82 ms** | **1.25 ms** | **2.18 ms** |
 
-At 300 requests per second, the path through the gateway measured 2.5 ms (half of requests), 4.2 ms (95%) and
-6.3 ms (99%), compared with 0.4 ms, 0.7 ms and 2.1 ms when calling the server directly. These are two separately
-measured distributions, so their difference is only an indication of what the gateway's checks cost, not an exact
+On the Windows laptop, the path through the gateway measured 2.5 ms (half of requests), 4.2 ms (95%) and 6.3 ms
+(99%), compared with 0.4 ms, 0.7 ms and 2.1 ms when calling the server directly. On the Mac it measured 0.82 ms,
+1.25 ms and 2.18 ms, compared with 0.21 ms, 0.56 ms and 0.96 ms directly. These are two separately measured
+distributions, so their difference is only an indication of what the gateway's checks cost, not an exact
 per-request overhead. Right after the gateways start, the first few seconds are slower (the slowest 1% around
-100 ms) while they warm up. These results are specific to the test environment.
+100 ms on the Windows laptop, 7 ms on the Mac) while they warm up. These results are specific to the test
+environments.
 
 **Capacity and accuracy**
 
-| Test | Result |
-|---|---|
-| Traffic through 3 gateways | **1,000 requests per second** with no errors (the highest rate tried on this laptop) |
-| One gateway on its own | handles about **550-600 requests per second** on this laptop |
-| Limit accuracy (limit 600 per minute, across 3 gateways) | **1,803 let through for 1,800 expected (0.17% off)** |
-| Changing a route every 10 seconds under traffic | **0 failed requests**; every gateway had the change within **0.07 seconds** |
-| Analytics dashboards with 864,000 stored requests | load in **0.02-0.06 seconds** |
+| Test | Windows laptop | Mac |
+|---|---|---|
+| Traffic through 3 gateways | **1,000 requests per second** with no errors (the highest rate tried) | **2,000 requests per second** with no errors (the highest rate tried) |
+| One gateway on its own | about **550-600 requests per second** | **2,000 requests per second** with no errors (the highest rate tried; the test tool started dropping a few of the planned requests at the top steps) |
+| Limit accuracy (limit 600 per minute, across 3 gateways) | **1,803 let through for 1,800 expected (0.17% off)** | **1,804 let through for 1,800 expected (0.22% off)** |
+| Changing a route every 10 seconds under traffic | **0 failed requests**; every gateway had the change within **0.07 seconds** | **0 failed requests**; every gateway had the change within **0.07 seconds** (65 ms at most) |
+| Analytics dashboards (summary, charts, routes, companies) with stored requests | 864,000 stored requests: load in **0.02-0.06 seconds** | 1,126,643 stored requests: load in **0.004-0.013 seconds** |
 
 **When something breaks** (200 requests per second; the deliberately failing route left out)
 
-| Switched off for 60 s | Observed impact |
-|---|---|
-| One of the three gateways | The other two continued serving; **0.18%** of requests failed while the stopped one restarted. |
-| API Management | No request impact observed during the test. Gateways kept serving from their own copy of the settings; settings could not be changed meanwhile. |
-| Kafka | No request failures observed; about **2%** of traffic records for analytics were lost. |
-| Redis | No request failures observed; rate limiting degraded to per-gateway counting and the gateway's idempotency check was bypassed, so the company's server must deduplicate (see decision 4). |
+| Switched off for 60 s | Windows laptop | Mac |
+|---|---|---|
+| One of the three gateways | The other two continued serving; **0.18%** of requests failed while the stopped one restarted. | The other two continued serving; **0.006%** of requests failed (2 of 34,231). |
+| API Management | No request impact observed during the test. Gateways kept serving from their own copy of the settings; settings could not be changed meanwhile. | No request failures observed; same behaviour. |
+| Kafka | No request failures observed; about **2%** of traffic records for analytics were lost. | No request failures observed; under **1%** of traffic records for analytics were lost. |
+| Redis | No request failures observed; rate limiting degraded to per-gateway counting and the gateway's idempotency check was bypassed, so the company's server must deduplicate (see decision 4). | No request failures observed; same behaviour. |
 
-These are observations from single test runs on the machine above, not guarantees.
+These are observations from single test runs on the machines above, not guarantees.
 
 ---
 
