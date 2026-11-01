@@ -322,6 +322,12 @@ part of the product itself.
 .\loadtest\run.ps1 -Test throughput -MaxRate 1000      # one test
 .\loadtest\run.ps1 -Test chaos -ChaosServices redis    # one outage
 ```
+On macOS and Linux use the shell version, which does the same:
+```bash
+./loadtest/run.sh                                      # all tests, about 40 minutes
+MAX_RATE=1000 ./loadtest/run.sh throughput             # one test
+CHAOS_SERVICES="redis" ./loadtest/run.sh chaos         # one outage
+```
 Results are saved in `loadtest/results/`: a summary and the raw measurements for each test, plus `machine.txt`
 describing the computer. The test companies' traffic also shows up in the Analytics UI. Log in as `lt-shop-admin`,
 `lt-payments-admin` or `lt-media-admin` with `loadtest-pass-123`.
