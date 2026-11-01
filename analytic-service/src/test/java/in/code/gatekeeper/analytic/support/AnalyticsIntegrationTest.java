@@ -51,7 +51,9 @@ public abstract class AnalyticsIntegrationTest {
 
     public static final String ISSUER = "gatekeeper-api-management";
 
-    static final MongoDBContainer MONGO = new MongoDBContainer("mongo:8.0");
+    // the container's own output goes to the test log, so a failed startup on CI shows why mongod stopped
+    static final MongoDBContainer MONGO = new MongoDBContainer("mongo:8.0")
+            .withLogConsumer(frame -> System.out.print("[mongo] " + frame.getUtf8String()));
     protected static final KeyPair SIGNING_KEY;
     static final HttpServer FAKES;
     protected static final List<String> PROMETHEUS_QUERIES = new CopyOnWriteArrayList<>();
